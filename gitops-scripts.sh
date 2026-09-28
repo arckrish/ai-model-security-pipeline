@@ -8,14 +8,23 @@
 #   GPU nodes: infra/prereqs/ocp-gpu-setup/README.md (MachineSet still manual)
 #   Edit repoURL / targetRevision in instances/gitops/application-root.yaml
 #     and instances/gitops/apps/*.yaml if using a fork
+#   Set APPS_DOMAIN from this cluster:
+#     APPS_DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
+#     echo "inference-gateway.${APPS_DOMAIN}"
 #   Edit instances/gateway/gateway.yaml hostname (REPLACE_WITH_CLUSTER_APPS_DOMAIN)
-#   Quay + MinIO secrets: quay-secret.yaml, minio-s3-secret.yaml from templates
-#   Hugging Face token for gated models (model-ingress)
+#   Credentials: cp .env.example .env and set HF_TOKEN, QUAY_*, MINIO_ROOT_*
+#   (gitops-scripts.sh creates cluster Secrets from .env — no quay/minio yaml files)
 #
 # Run phase-by-phase: copy/paste each phase block into your shell
 # (do not run bash gitops-scripts.sh end-to-end).
 
 cd "$(dirname "$0")"
+
+source ./.env
+
+export QUAY_SERVER="${QUAY_SERVER:-quay.io}"
+export QUAY_EMAIL="${QUAY_EMAIL:-}"
+export QUAY_SECRET_NAME="${QUAY_SECRET_NAME:-sudash-modelpipeline-pull-secret}"
 
 # Platform namespaces — override via environment before running commands below.
 export NS_MODEL_INGRESS="${NS_MODEL_INGRESS:-model-ingress}"
@@ -32,59 +41,74 @@ export NS_GITOPS="${NS_GITOPS:-openshift-gitops}"
 # Children sync overlays 00–15 + model-ingress + model-test promotion (waves 0–16).
 # =============================================================================
 oc apply -k ./instances/gitops/
-# Equivalent:
-#   oc apply -k ./overlays/17-gitops/
-#
+
 # Verify root + children:
 oc get application ai-model-security-platform -n "${NS_GITOPS}"
 oc get applications -n "${NS_GITOPS}" -l app.kubernetes.io/part-of=ai-model-security-pipeline
-#
-# Watch sync (operator CSV / KataConfig can take a long time):
-#   oc get applications -n "${NS_GITOPS}" -w
-# Expect child apps: ai-sec-00-gpu-operators … ai-sec-15-hardware-profile,
-#   ai-sec-model-ingress, model-test-verified-models
+
+# RHCL (connectivity-link) Subscription uses installPlanApproval: Manual.
+# Wait until ai-sec-02-operators has created the InstallPlan, then approve:
+#   oc get application ai-sec-02-operators -n "${NS_GITOPS}"
+oc get installplan -n kuadrant-system
+# Approve every InstallPlan that is not yet approved (safe if already approved):
+for ip in $(oc get installplan -n kuadrant-system -o jsonpath='{.items[?(@.spec.approved==false)].metadata.name}'); do
+  oc patch installplan "${ip}" -n kuadrant-system --type merge -p '{"spec":{"approved":true}}'
+done
+oc get csv -n kuadrant-system
+# oc wait --for=jsonpath='{.status.phase}'=Succeeded csv -n kuadrant-system --timeout=600s
 
 # =============================================================================
-# Phase 1: Wait for storage (MinIO from overlay 05 via Argo)
+# Phase 1: MinIO root from .env, then wait for storage (overlay 05 via Argo)
 # =============================================================================
+oc create secret generic minio-root -n "${NS_MINIO}" \
+  --from-literal=MINIO_ROOT_USER="${MINIO_ROOT_USER}" \
+  --from-literal=MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD}" \
+  --dry-run=client -o yaml | oc apply -f -
+oc rollout restart deployment/minio -n "${NS_MINIO}" || true
 oc rollout status deployment/minio -n "${NS_MINIO}" --timeout=300s
 oc wait --for=condition=Available deployment/minio -n "${NS_MINIO}" --timeout=600s
 oc wait --for=condition=complete job/minio-bucket-init -n "${NS_MINIO}" --timeout=300s
 oc get route minio-api minio-console -n "${NS_MINIO}"
 
 # =============================================================================
-# Phase 2: Zone secrets (not in Git)
-# ingress-models PVC: instances/model-ingress (App ai-sec-model-ingress / Phase 0 sync)
-# verified-models PVC: instances/model-test-ns via overlay 04-zones
+# Phase 2: Zone secrets from .env (no quay-secret.yaml / minio-s3-secret.yaml)
 # =============================================================================
-
-# cp minio-s3-secret.yaml.template minio-s3-secret.yaml   # edit credentials first
 for ns in "${NS_MODEL_INGRESS}" "${NS_MODEL_EVAL}" "${NS_MODEL_SANDBOX}" "${NS_MODEL_TEST}"; do
-  oc apply -f minio-s3-secret.yaml -n "${ns}"
-done
-for ns in "${NS_MODEL_INGRESS}" "${NS_MODEL_EVAL}" "${NS_MODEL_SANDBOX}" "${NS_MODEL_TEST}"; do
+  oc create secret generic minio-s3 -n "${ns}" \
+    --from-literal=MINIO_ENDPOINT=http://minio.minio-system.svc:9000 \
+    --from-literal=AWS_ACCESS_KEY_ID="${MINIO_ROOT_USER}" \
+    --from-literal=AWS_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}" \
+    --from-literal=AWS_REGION=us-east-1 \
+    --from-literal=AWS_ENDPOINT_URL=http://minio.minio-system.svc:9000 \
+    --from-literal=AWS_DEFAULT_REGION=us-east-1 \
+    --from-literal=S3_USE_HTTPS=0 \
+    --from-literal=S3_VERIFY_SSL=0 \
+    --from-literal=AWS_S3_FORCE_PATH_STYLE=true \
+    --dry-run=client -o yaml | oc apply -f -
   oc annotate secret minio-s3 -n "${ns}" --overwrite \
     "serving.kserve.io/s3-endpoint=minio.minio-system.svc:9000" \
     "serving.kserve.io/s3-usehttps=0" \
     "serving.kserve.io/s3-region=us-east-1" \
     "serving.kserve.io/s3-verifyssl=0" \
     "serving.kserve.io/s3-useanoncredential=false" \
-    "serving.kserve.io/s3-usevirtualbucket=false" || true
-done
-for ns in "${NS_MODEL_INGRESS}" "${NS_MODEL_EVAL}" "${NS_MODEL_SANDBOX}" "${NS_MODEL_TEST}"; do
-  oc get secret minio-s3 -n "${ns}"
+    "serving.kserve.io/s3-usevirtualbucket=false"
 done
 
-# cp quay-secret.yaml.template quay-secret.yaml             # edit credentials first
-oc apply -f quay-secret.yaml -n "${NS_BUILD_IMAGE}"
-oc secrets link builder sudash-modelpipeline-pull-secret -n "${NS_BUILD_IMAGE}"
-oc apply -f quay-secret.yaml -n "${NS_MODEL_INGRESS}"
-oc apply -f quay-secret.yaml -n "${NS_MODEL_EVAL}"
-oc apply -f quay-secret.yaml -n "${NS_MODEL_TEST}"
+for ns in "${NS_MODEL_INGRESS}" "${NS_MODEL_EVAL}" "${NS_BUILD_IMAGE}" "${NS_MODEL_TEST}"; do
+  oc create secret docker-registry "${QUAY_SECRET_NAME}" \
+    --docker-server="${QUAY_SERVER}" \
+    --docker-username="${QUAY_USERNAME}" \
+    --docker-password="${QUAY_PASSWORD}" \
+    --docker-email="${QUAY_EMAIL}" \
+    -n "${ns}" \
+    --dry-run=client -o yaml | oc apply -f -
+done
 
-# Hugging Face token (ingress only, gated models) — replace <your-token>:
+oc secrets link builder "${QUAY_SECRET_NAME}" -n "${NS_BUILD_IMAGE}"
+
 oc create secret generic hf-token -n "${NS_MODEL_INGRESS}" \
-  --from-literal=HF_TOKEN=<your-token>
+  --from-literal=HF_TOKEN="${HF_TOKEN}" \
+  --dry-run=client -o yaml | oc apply -f -
 
 # =============================================================================
 # Phase 3: Build scanner images (Binary BuildConfigs from overlay 06)
@@ -114,21 +138,22 @@ oc annotate svc/authorino-authorino-authorization \
 export MODEL_CONN_VERSION="${MODEL_CONN_VERSION:-d4xs2}"
 export MODEL_CONN_NAME="redhatai-qwen3-8b-fp8-dynamic-${MODEL_CONN_VERSION}"
 
-if [[ ! -f minio-s3-secret.yaml ]]; then
-  echo "minio-s3-secret.yaml missing; cp minio-s3-secret.yaml.template and edit credentials (Phase 2)" >&2
-else
-  MINIO_USER="$(awk -F': ' '/AWS_ACCESS_KEY_ID:/{print $2; exit}' minio-s3-secret.yaml | tr -d ' \"')"
-  MINIO_PASS="$(awk -F': ' '/AWS_SECRET_ACCESS_KEY:/{print $2; exit}' minio-s3-secret.yaml | tr -d ' \"')"
-  sed -e "s/PLACEHOLDER/${MODEL_CONN_VERSION}/g" \
-      -e "s/CHANGE_ME_MINIO_ROOT_USER/${MINIO_USER}/g" \
-      -e "s/CHANGE_ME_MINIO_ROOT_PASSWORD/${MINIO_PASS}/g" \
-    instances/model-test/model-connection-secret.yaml.template \
-    > instances/model-test/model-connection-secret.yaml
-fi
-
-sed "s/PLACEHOLDER/${MODEL_CONN_VERSION}/g" \
-  instances/model-test/qwen3-8b-fp8-verified.yaml.template \
-  > instances/model-test/qwen3-8b-fp8-verified.yaml
+python3 - <<'PY'
+from pathlib import Path
+import os
+ver = os.environ["MODEL_CONN_VERSION"]
+user = os.environ["MINIO_ROOT_USER"]
+password = os.environ["MINIO_ROOT_PASSWORD"]
+conn = Path("instances/model-test/model-connection-secret.yaml.template").read_text()
+conn = conn.replace("PLACEHOLDER", ver)
+conn = conn.replace("CHANGE_ME_MINIO_ROOT_USER", user)
+conn = conn.replace("CHANGE_ME_MINIO_ROOT_PASSWORD", password)
+Path("instances/model-test/model-connection-secret.yaml").write_text(conn)
+llmis = Path("instances/model-test/qwen3-8b-fp8-verified.yaml.template").read_text()
+Path("instances/model-test/qwen3-8b-fp8-verified.yaml").write_text(
+    llmis.replace("PLACEHOLDER", ver)
+)
+PY
 
 oc apply -k ./overlays/16-test-serving/ -n "${NS_MODEL_TEST}"
 oc get llminferenceservice -n "${NS_MODEL_TEST}"

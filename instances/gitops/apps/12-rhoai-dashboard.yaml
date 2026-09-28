@@ -14,7 +14,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/sukantadash/ai-model-security-pipeline.git
-    targetRevision: zqlk8.sandbox425.opentlc.com
+    targetRevision: cluster-install
     path: overlays/12-rhoai-dashboard
   destination:
     server: https://kubernetes.default.svc

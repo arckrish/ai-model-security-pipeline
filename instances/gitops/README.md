@@ -18,7 +18,7 @@ OpenShift GitOps (Argo CD) deploys the declarative overlays from `script.sh` via
 1. OpenShift GitOps operator Ready (`Application` CRD present).
 2. Push this repo to a remote Argo CD can reach; set `repoURL` / `targetRevision` in `application-root.yaml` and every file under `apps/` if using a fork.
 3. Edit `instances/gateway/gateway.yaml` hostname (`REPLACE_WITH_CLUSTER_APPS_DOMAIN`).
-4. Prepare `minio-s3-secret.yaml` and `quay-secret.yaml` from templates (gitignored).
+4. `cp .env.example .env` and set `HF_TOKEN`, `QUAY_USERNAME` / `QUAY_PASSWORD`, `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` (gitignored). `gitops-scripts.sh` creates cluster Secrets from `.env` (no quay/minio yaml files).
 5. GPU MachineSet if needed: `infra/prereqs/ocp-gpu-setup/README.md`.
 
 ## Deploy (recommended)

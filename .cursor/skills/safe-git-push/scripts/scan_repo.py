@@ -181,6 +181,10 @@ def scan_text(rel: str, text: str, known_placeholder_files: dict[str, str]) -> l
     findings: list[dict] = []
     for i, line in enumerate(text.splitlines(), 1):
         if LIVE_FQDN_RE.search(line) and not OK_HOST_RE.search(line):
+            # Git branch names in Argo Application targetRevision may look like lab
+            # FQDNs; those are intentional and are not cluster hostnames.
+            if re.search(r"^\s*targetRevision:\s*\S+", line):
+                continue
             findings.append(
                 finding(
                     path=rel,
