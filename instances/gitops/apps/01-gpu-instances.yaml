@@ -19,10 +19,27 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: nvidia-gpu-operator
+  # Operator mutates defaults / drops deprecated fields → perpetual OutOfSync without these.
+  ignoreDifferences:
+    - group: nfd.openshift.io
+      kind: NodeFeatureDiscovery
+      jsonPointers:
+        - /spec/customConfig
+        - /spec/enableTaints
+        - /spec/prunerOnDelete
+        - /spec/topologyUpdater
+    - group: nvidia.com
+      kind: ClusterPolicy
+      jsonPointers:
+        - /spec/driver/kernelModuleType
+        - /spec/driver/upgradePolicy/kernelModuleType
+        - /spec/operator/runtimeClass
+        - /spec/toolkit/installDir
   syncPolicy:
     syncOptions:
       - CreateNamespace=true
       - SkipDryRunOnMissingResource=true
+      - RespectIgnoreDifferences=true
     automated:
       prune: true
       selfHeal: true

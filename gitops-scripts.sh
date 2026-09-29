@@ -36,6 +36,26 @@ export NS_MINIO="${NS_MINIO:-minio-system}"
 export NS_GITOPS="${NS_GITOPS:-openshift-gitops}"
 
 # =============================================================================
+# Phase -1: Size Argo CD application-controller (avoid OOMKilled / stuck syncs)
+# Default limits are too small for this App-of-Apps + many child Applications.
+# =============================================================================
+oc patch argocd openshift-gitops -n "${NS_GITOPS}" --type merge -p '
+spec:
+  controller:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 4Gi
+      limits:
+        cpu: "2"
+        memory: 8Gi
+'
+oc delete pod -n "${NS_GITOPS}" -l app.kubernetes.io/name=openshift-gitops-application-controller --ignore-not-found
+oc rollout status statefulset/openshift-gitops-application-controller -n "${NS_GITOPS}" --timeout=300s
+oc get pods -n "${NS_GITOPS}" | grep application-controller
+# Expect Ready 1/1 (not OOMKilled / CrashLoopBackOff) before Phase 0.
+
+# =============================================================================
 # Phase 0: Apply App-of-Apps (single apply)
 # Overlay: 17-gitops → instances/gitops (root Application only)
 # Children sync overlays 00–15 + model-ingress + model-test promotion (waves 0–16).
@@ -46,16 +66,10 @@ oc apply -k ./instances/gitops/
 oc get application ai-model-security-platform -n "${NS_GITOPS}"
 oc get applications -n "${NS_GITOPS}" -l app.kubernetes.io/part-of=ai-model-security-pipeline
 
-# RHCL (connectivity-link) Subscription uses installPlanApproval: Manual.
-# Wait until ai-sec-02-operators has created the InstallPlan, then approve:
+# RHCL (connectivity-link) uses installPlanApproval: Automatic — wait for CSV:
 #   oc get application ai-sec-02-operators -n "${NS_GITOPS}"
-oc get installplan -n kuadrant-system
-# Approve every InstallPlan that is not yet approved (safe if already approved):
-for ip in $(oc get installplan -n kuadrant-system -o jsonpath='{.items[?(@.spec.approved==false)].metadata.name}'); do
-  oc patch installplan "${ip}" -n kuadrant-system --type merge -p '{"spec":{"approved":true}}'
-done
 oc get csv -n kuadrant-system
-# oc wait --for=jsonpath='{.status.phase}'=Succeeded csv -n kuadrant-system --timeout=600s
+oc wait --for=jsonpath='{.status.phase}'=Succeeded csv -n kuadrant-system --timeout=600s || true
 
 # =============================================================================
 # Phase 1: MinIO root from .env, then wait for storage (overlay 05 via Argo)
