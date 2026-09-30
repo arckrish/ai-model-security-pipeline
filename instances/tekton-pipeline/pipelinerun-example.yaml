@@ -25,6 +25,8 @@ spec:
       value: /workspace/models
     - name: git-url
       value: https://github.com/sukantadash/ai-model-security-pipeline.git
+    - name: git-revision
+      value: cluster-install
     - name: model-sandbox-path
       value: instances/model-sandbox
     - name: model-test-path
