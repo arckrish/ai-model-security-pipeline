@@ -12,6 +12,6 @@ oc get application ai-model-security-platform -n openshift-gitops
 oc get applications -n openshift-gitops -l app.kubernetes.io/part-of=ai-model-security-pipeline
 ```
 
-`overlays/16-test-serving` is **not** an Argo app (gitignored generated files); apply it in `gitops-scripts.sh` Phase 5 after secrets/builds.
+`overlays/16-test-serving` is **not** an Argo app (gitignored generated files); apply it in `gitops-scripts.sh` Phase 6 after the fetch job + PipelineRun.
 
 After a pipeline pass, commit the updated verified LLMInferenceService under `instances/model-test/` — the `model-test-verified-models` child Application promotes it to `model-test`.

@@ -71,6 +71,19 @@ oc get applications -n "${NS_GITOPS}" -l app.kubernetes.io/part-of=ai-model-secu
 oc get csv -n kuadrant-system
 oc wait --for=jsonpath='{.status.phase}'=Succeeded csv -n kuadrant-system --timeout=600s || true
 
+# Enable OpenShift console plugins (Pipelines / GitOps menus). Operator installs the
+# ConsolePlugin CRs; they stay hidden until listed on console.operator/cluster.
+oc wait --for=condition=Available deployment/pipelines-console-plugin \
+  -n openshift-pipelines --timeout=300s || true
+for plugin in pipelines-console-plugin gitops-plugin; do
+  oc get consoleplugin "${plugin}" >/dev/null 2>&1 || continue
+  if ! oc get console.operator cluster -o jsonpath='{.spec.plugins[*]}' | grep -qw "${plugin}"; then
+    oc patch console.operator cluster --type json \
+      -p "[{\"op\":\"add\",\"path\":\"/spec/plugins/-\",\"value\":\"${plugin}\"}]"
+  fi
+done
+oc get console.operator cluster -o jsonpath='plugins={.spec.plugins}{"\n"}'
+
 # =============================================================================
 # Phase 1: MinIO root from .env, then wait for storage (overlay 05 via Argo)
 # =============================================================================
@@ -140,14 +153,66 @@ for ns in "${NS_MODEL_INGRESS}" "${NS_MODEL_EVAL}" "${NS_MODEL_SANDBOX}"; do
 done
 
 # =============================================================================
-# Phase 4: Authorino serving-cert annotate
+# Phase 4: Authorino serving-cert (bootstrap Service → secret → Authorino Ready)
+# Authorino CR needs authorino-server-cert before it creates its own Service;
+# create a stub Service with the OpenShift serving-cert annotation first.
 # =============================================================================
+oc apply -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: authorino-authorino-authorization
+  namespace: kuadrant-system
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: authorino-server-cert
+spec:
+  ports:
+  - name: grpc
+    port: 50051
+    protocol: TCP
+    targetPort: 50051
+  selector:
+    authorino-resource: authorino
+  type: ClusterIP
+EOF
 oc annotate svc/authorino-authorino-authorization \
   service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
   -n kuadrant-system --overwrite || true
+oc wait --for=condition=Ready authorino/authorino -n kuadrant-system --timeout=300s || \
+  oc get authorino authorino -n kuadrant-system -o jsonpath='{.status.conditions[*].message}{"\n"}'
 
 # =============================================================================
-# Phase 5: Test serving (overlay 16 — not an Argo app; gitignored generated files)
+# Phase 5: Fetch model + live PipelineRun (script.sh Phase 10 + live pipeline)
+# Prerequisites: Argo apps 07–12 Synced (Tasks, Pipeline, Triggers, Chains, RHOAI).
+# Edit git-url in pipelinerun-example.yaml to a reachable HTTPS repo first.
+# =============================================================================
+# Wait until RHOAI / Model Registry are Ready (needed before publish-artifact):
+#   oc get application ai-sec-11-rhoai ai-sec-12-rhoai-dashboard -n "${NS_GITOPS}"
+#   oc wait --for=jsonpath='{.status.phase}'=Ready dscinitialization/default-dsci --timeout=600s
+#   oc wait --for=jsonpath='{.status.phase}'=Ready datasciencecluster/default-dsc --timeout=600s
+#   oc wait --for=condition=Available mr/model-registry -n rhoai-model-registries --timeout=600s
+
+oc apply -f ./instances/model-ingress-fetch/model-fetch-job.yaml -n "${NS_MODEL_INGRESS}"
+oc wait --for=condition=complete job/model-fetch -n "${NS_MODEL_INGRESS}" --timeout=7200s
+
+# Confirm sandbox is empty of a leftover eval-* CR, then start the pipeline:
+oc get llminferenceservice -n "${NS_MODEL_SANDBOX}"
+oc get secret minio-s3 -n "${NS_MODEL_SANDBOX}"
+oc get pipeline.tekton.dev model-security-pipeline -n "${NS_MODEL_EVAL}" \
+  -o jsonpath='{.spec.params[?(@.name=="git-url")].default}{"\n"}'
+oc create -f ./instances/tekton-pipeline/pipelinerun-example.yaml -n "${NS_MODEL_EVAL}"
+oc get pipelinerun -n "${NS_MODEL_EVAL}" -w
+#
+# After serve-llm-start: CR is in model-sandbox (not model-eval):
+#   oc get llminferenceservice,svc,pod -n "${NS_MODEL_SANDBOX}"
+# After finally: CR deleted, namespace remains:
+#   oc get ns "${NS_MODEL_SANDBOX}"
+#   oc get llminferenceservice -n "${NS_MODEL_SANDBOX}"
+# Auto-pass or review: publish-artifact copies weights to models-verified, registers
+# Model Registry, and oc apply's the patched LLMInferenceService in model-test.
+
+# =============================================================================
+# Phase 6: Test serving (overlay 16 — not an Argo app; gitignored generated files)
 # =============================================================================
 export MODEL_CONN_VERSION="${MODEL_CONN_VERSION:-d4xs2}"
 export MODEL_CONN_NAME="redhatai-qwen3-8b-fp8-dynamic-${MODEL_CONN_VERSION}"
@@ -171,16 +236,14 @@ PY
 
 oc apply -k ./overlays/16-test-serving/ -n "${NS_MODEL_TEST}"
 oc get llminferenceservice -n "${NS_MODEL_TEST}"
-
-# =============================================================================
-# Phase 6: Fetch model + live PipelineRun (optional)
-# =============================================================================
-# oc apply -f ./instances/model-ingress-fetch/model-fetch-job.yaml -n "${NS_MODEL_INGRESS}"
-# oc wait --for=condition=complete job/model-fetch -n "${NS_MODEL_INGRESS}" --timeout=7200s
+# oc wait --for=condition=Ready llminferenceservice -n "${NS_MODEL_TEST}" --timeout=900s
 #
-# Edit git-url in pipelinerun-example.yaml first, then:
-# oc create -f ./instances/tekton-pipeline/pipelinerun-example.yaml -n "${NS_MODEL_EVAL}"
-# oc get pipelinerun -n "${NS_MODEL_EVAL}" -w
+# Smoke test:
+GATEWAY_HOST=$(oc get gateway openshift-ai-inference -n openshift-ingress \
+  -o jsonpath='{.spec.listeners[0].hostname}')
+TOKEN="$(oc create token test-user -n "${NS_MODEL_TEST}")"
+curl -sS "https://${GATEWAY_HOST}/${NS_MODEL_TEST}/qwen3-8b-fp8/v1/models" \
+  -H "Authorization: Bearer ${TOKEN}" | jq .
 
 # =============================================================================
 # Cleanup — uncomment only when tearing down

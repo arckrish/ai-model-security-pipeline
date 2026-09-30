@@ -60,6 +60,18 @@ oc get csv -n openshift-sandboxed-containers-operator
 oc get installplan -A
 # oc patch installplan <name> -n <ns> --type merge -p '{"spec":{"approved":true}}'
 
+# Enable console plugins so Pipelines / GitOps appear in the OpenShift console sidebar.
+oc wait --for=condition=Available deployment/pipelines-console-plugin \
+  -n openshift-pipelines --timeout=300s || true
+for plugin in pipelines-console-plugin gitops-plugin; do
+  oc get consoleplugin "${plugin}" >/dev/null 2>&1 || continue
+  if ! oc get console.operator cluster -o jsonpath='{.spec.plugins[*]}' | grep -qw "${plugin}"; then
+    oc patch console.operator cluster --type json \
+      -p "[{\"op\":\"add\",\"path\":\"/spec/plugins/-\",\"value\":\"${plugin}\"}]"
+  fi
+done
+oc get console.operator cluster -o jsonpath='plugins={.spec.plugins}{"\n"}'
+
 # =============================================================================
 # Phase 2: Zones — namespaces, NetworkPolicies, pipeline RBAC
 # Overlay: 04-zones (eval/sandbox/test namespace + build-image namespace + pipeline-rbac).
@@ -241,11 +253,32 @@ oc get certificate -n openshift-ingress
 # =============================================================================
 # Phase 13: Authorino
 # Overlay: 14-authorino
+# Bootstrap Service first so OpenShift issues authorino-server-cert (Authorino
+# waits on that secret before creating its own endpoints).
 # =============================================================================
+oc apply -f - <<'EOF'
+apiVersion: v1
+kind: Service
+metadata:
+  name: authorino-authorino-authorization
+  namespace: kuadrant-system
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: authorino-server-cert
+spec:
+  ports:
+  - name: grpc
+    port: 50051
+    protocol: TCP
+    targetPort: 50051
+  selector:
+    authorino-resource: authorino
+  type: ClusterIP
+EOF
 oc annotate svc/authorino-authorino-authorization \
   service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
   -n kuadrant-system --overwrite || true
 oc apply -k ./overlays/14-authorino/
+oc wait --for=condition=Ready authorino/authorino -n kuadrant-system --timeout=300s || true
 
 # =============================================================================
 # Phase 14: GPU hardware profile

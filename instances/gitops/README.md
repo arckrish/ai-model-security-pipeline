@@ -32,7 +32,7 @@ oc apply -k ./instances/gitops/
 oc get applications -n openshift-gitops -l app.kubernetes.io/part-of=ai-model-security-pipeline
 ```
 
-Then continue with Phases 1–6 in `gitops-scripts.sh` (MinIO wait, secrets, builds, authorino, overlay 16, optional fetch/PipelineRun).
+Then continue with Phases 1–6 in `gitops-scripts.sh` (MinIO wait, secrets, builds, authorino, fetch job + PipelineRun, overlay 16 test serving).
 ## Sync waves (child apps)
 
 | Wave | Application | Path |
