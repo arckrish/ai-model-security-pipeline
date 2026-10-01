@@ -59,14 +59,32 @@ def patch_doc(
     return out
 
 
+def is_yaml_candidate(path: Path) -> bool:
+    """True for *.yaml / *.yml and committed templates (*.yaml.template)."""
+    name = path.name.lower()
+    if name in {"kustomization.yaml", "kustomization.yml"}:
+        return False
+    if name.endswith((".yaml.template", ".yml.template")):
+        return True
+    return path.suffix.lower() in {".yaml", ".yml"}
+
+
+def output_basename(path: Path) -> str:
+    """Strip .template so oc apply receives a normal .yaml filename."""
+    name = path.name
+    if name.endswith(".yaml.template"):
+        return name[: -len(".template")]
+    if name.endswith(".yml.template"):
+        return name[: -len(".template")]
+    return name
+
+
 def find_llmis_files(root: Path) -> list[Path]:
     if root.is_file():
         return [root]
     found = []
     for path in sorted(root.rglob("*")):
-        if path.suffix.lower() not in {".yaml", ".yml"}:
-            continue
-        if path.name == "kustomization.yaml":
+        if not path.is_file() or not is_yaml_candidate(path):
             continue
         try:
             docs = load_docs(path)
@@ -143,7 +161,7 @@ def main() -> int:
     ns = args.namespace or None
     total = 0
     for path in files:
-        dest = out_dir / path.name
+        dest = out_dir / output_basename(path)
         total += patch_path(
             path,
             dest,

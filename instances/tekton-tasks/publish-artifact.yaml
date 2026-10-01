@@ -53,7 +53,7 @@ spec:
   steps:
     - name: publish
       image: $(params.image)
-      imagePullPolicy: IfNotPresent
+      imagePullPolicy: Always
       volumeMounts:
         - name: register-model
           mountPath: /opt/register
@@ -115,7 +115,7 @@ spec:
         printf '%s' "${S3_URI}" > /scratch/published-uri
     - name: clone-patch-test
       image: $(params.image)
-      imagePullPolicy: IfNotPresent
+      imagePullPolicy: Always
       env:
       - name: GIT_TOKEN
         valueFrom:

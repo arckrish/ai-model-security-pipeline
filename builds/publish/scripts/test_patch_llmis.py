@@ -110,6 +110,14 @@ spec:
             found = find_llmis_files(root)
             self.assertEqual([p.name for p in found], ["LLMInferenceService.yaml"])
 
+    def test_find_yaml_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "qwen3-8b-fp8-verified.yaml.template").write_text(SAMPLE)
+            (root / "networkpolicy.yaml").write_text("kind: NetworkPolicy\nmetadata:\n  name: x\n")
+            found = find_llmis_files(root)
+            self.assertEqual([p.name for p in found], ["qwen3-8b-fp8-verified.yaml.template"])
+
 
 if __name__ == "__main__":
     unittest.main()
