@@ -5,7 +5,10 @@
 # Prerequisites:
 #   oc login ...
 #   OpenShift GitOps operator Ready (Application CRD present)
-#   GPU nodes: infra/prereqs/ocp-gpu-setup/README.md (MachineSet still manual)
+#   GPU nodes: two GPU workers required — one for model-sandbox (pipeline eval
+#     serve-llm-start) and one for model-test (verified serve after publish).
+#     A single GPU blocks the next PipelineRun while model-test keeps serving.
+#     Setup: infra/prereqs/ocp-gpu-setup/README.md (MachineSet still manual)
 #   Edit repoURL / targetRevision in instances/gitops/application-root.yaml
 #     and instances/gitops/apps/*.yaml if using a fork
 #   Set APPS_DOMAIN from this cluster:
@@ -200,8 +203,14 @@ oc get llminferenceservice -n "${NS_MODEL_SANDBOX}"
 oc get secret minio-s3 -n "${NS_MODEL_SANDBOX}"
 oc get pipeline.tekton.dev model-security-pipeline -n "${NS_MODEL_EVAL}" \
   -o jsonpath='{.spec.params[?(@.name=="git-url")].default}{"\n"}'
+
+#cleanup any instance tunning in "${NS_MODEL_TEST}"
+oc get llminferenceservice -n "${NS_MODEL_TEST}"
+oc delete llminferenceservice -n "${NS_MODEL_TEST}" --all
+
 oc create -f ./instances/tekton-pipeline/pipelinerun-example.yaml -n "${NS_MODEL_EVAL}"
 oc get pipelinerun -n "${NS_MODEL_EVAL}" -w
+
 #
 # After serve-llm-start: CR is in model-sandbox (not model-eval):
 #   oc get llminferenceservice,svc,pod -n "${NS_MODEL_SANDBOX}"
@@ -214,30 +223,7 @@ oc get pipelinerun -n "${NS_MODEL_EVAL}" -w
 # =============================================================================
 # Phase 6: Test serving (overlay 16 — not an Argo app; gitignored generated files)
 # =============================================================================
-export MODEL_CONN_VERSION="${MODEL_CONN_VERSION:-d4xs2}"
-export MODEL_CONN_NAME="redhatai-qwen3-8b-fp8-dynamic-${MODEL_CONN_VERSION}"
 
-python3 - <<'PY'
-from pathlib import Path
-import os
-ver = os.environ["MODEL_CONN_VERSION"]
-user = os.environ["MINIO_ROOT_USER"]
-password = os.environ["MINIO_ROOT_PASSWORD"]
-conn = Path("instances/model-test/model-connection-secret.yaml.template").read_text()
-conn = conn.replace("PLACEHOLDER", ver)
-conn = conn.replace("CHANGE_ME_MINIO_ROOT_USER", user)
-conn = conn.replace("CHANGE_ME_MINIO_ROOT_PASSWORD", password)
-Path("instances/model-test/model-connection-secret.yaml").write_text(conn)
-llmis = Path("instances/model-test/qwen3-8b-fp8-verified.yaml.template").read_text()
-Path("instances/model-test/qwen3-8b-fp8-verified.yaml").write_text(
-    llmis.replace("PLACEHOLDER", ver)
-)
-PY
-
-oc apply -k ./overlays/16-test-serving/ -n "${NS_MODEL_TEST}"
-oc get llminferenceservice -n "${NS_MODEL_TEST}"
-# oc wait --for=condition=Ready llminferenceservice -n "${NS_MODEL_TEST}" --timeout=900s
-#
 # Smoke test:
 GATEWAY_HOST=$(oc get gateway openshift-ai-inference -n openshift-ingress \
   -o jsonpath='{.spec.listeners[0].hostname}')
