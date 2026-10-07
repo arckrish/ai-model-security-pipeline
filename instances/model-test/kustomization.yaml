@@ -7,8 +7,6 @@ namespace: model-test
 resources:
   - networkpolicy.yaml
   - networkpolicy-router-apiserver.yaml
-  - pipeline-apply-rbac.yaml
-  - serving-rbac.yaml
   - llmis-config-redhatai-qwen3-8b-fp8-dynamic.yaml
   - model-connection-secret.yaml
   - qwen3-8b-fp8-verified.yaml

@@ -160,6 +160,16 @@ done
 # Authorino CR needs authorino-server-cert before it creates its own Service;
 # create a stub Service with the OpenShift serving-cert annotation first.
 # =============================================================================
+
+#Check Authorino status:
+oc get authorino authorino -n kuadrant-system \
+  -o jsonpath='Ready={.status.conditions[?(@.type=="Ready")].status} reason={.status.conditions[?(@.type=="Ready")].reason}{"\n"}{.status.conditions[?(@.type=="Ready")].message}{"\n"}'
+oc get secret authorino-server-cert -n kuadrant-system
+oc get svc authorino-authorino-authorization -n kuadrant-system \
+  -o jsonpath='ann={.metadata.annotations.service\.beta\.openshift\.io/serving-cert-secret-name}{"\n"}'
+
+
+
 oc apply -f - <<'EOF'
 apiVersion: v1
 kind: Service
@@ -178,11 +188,21 @@ spec:
     authorino-resource: authorino
   type: ClusterIP
 EOF
+
+#OR
+
 oc annotate svc/authorino-authorino-authorization \
   service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert \
   -n kuadrant-system --overwrite || true
-oc wait --for=condition=Ready authorino/authorino -n kuadrant-system --timeout=300s || \
-  oc get authorino authorino -n kuadrant-system -o jsonpath='{.status.conditions[*].message}{"\n"}'
+
+# Force Authorino reconcile
+oc annotate authorino authorino -n kuadrant-system reconcile="$(date +%s)" --overwrite
+
+
+oc get secret authorino-server-cert -n kuadrant-system
+oc wait --for=condition=Ready authorino/authorino -n kuadrant-system --timeout=300s
+oc get authorino authorino -n kuadrant-system \
+  -o jsonpath='Ready={.status.conditions[?(@.type=="Ready")].status} reason={.status.conditions[?(@.type=="Ready")].reason}{"\n"}'
 
 # =============================================================================
 # Phase 5: Fetch model + live PipelineRun (script.sh Phase 10 + live pipeline)
