@@ -59,6 +59,8 @@ spec:
     description: Pod-local emptyDir for scan JSON before S3 upload; not shared across TaskRuns
   tasks:
   - name: fetch-artifact
+    # The Task itself retries the extract 4x; this re-runs the whole TaskRun if the pod dies.
+    retries: 2
     taskRef:
       name: fetch-artifact
     params:
@@ -502,6 +504,9 @@ spec:
       value: $(params.model-id)
     - name: enable-auth
       value: 'true'
+    # First pull of the ~9 GB ModelCar on the model-test GPU node can exceed the 900s default.
+    - name: wait-timeout
+      value: 1800s
   finally:
   - name: nemo-guardrails-stop
     taskRef:
