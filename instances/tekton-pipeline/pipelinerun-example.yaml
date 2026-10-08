@@ -24,7 +24,7 @@ spec:
     - name: model-id
       value: redhatai-qwen3-8b-fp8-dynamic
     - name: modelcar-image
-      value: quay.io/CHANGE_ME/modelcar-redhatai-qwen3-8b-fp8-dynamic
+      value: quay.io/sudash/modelcar-redhatai-qwen3-8b-fp8-dynamic
     - name: model-path
       value: /workspace/models
     - name: git-url

@@ -15,12 +15,19 @@ export BUILDAH_ISOLATION="${BUILDAH_ISOLATION:-chroot}"
 echo "Building ModelCar ${FULL_IMAGE} from HF_REPO=${HF_REPO} MODEL_ID=${MODEL_ID}"
 
 AUTHFILE="${REGISTRY_AUTH_FILE:-/tmp/auth.json}"
-export REGISTRY_AUTH_FILE="${AUTHFILE}"
 if [[ -f /var/run/secrets/kubernetes.io/dockerconfigjson/.dockerconfigjson ]]; then
   cp /var/run/secrets/kubernetes.io/dockerconfigjson/.dockerconfigjson "${AUTHFILE}"
 elif [[ -f /run/secrets/quay/.dockerconfigjson ]]; then
   cp /run/secrets/quay/.dockerconfigjson "${AUTHFILE}"
 fi
+if [[ ! -s "${AUTHFILE}" ]]; then
+  echo "Quay authfile missing or empty at ${AUTHFILE}; mount sudash-modelpipeline-pull-secret" >&2
+  exit 1
+fi
+export REGISTRY_AUTH_FILE="${AUTHFILE}"
+# buildah also checks $HOME/.docker/config.json
+mkdir -p "${HOME:-/tmp}/.docker"
+cp "${AUTHFILE}" "${HOME:-/tmp}/.docker/config.json"
 
 build_args=(
   bud
@@ -36,6 +43,10 @@ fi
 build_args+=("${CONTEXT_DIR}")
 
 buildah "${build_args[@]}"
-buildah push --storage-driver "${STORAGE_DRIVER}" "${FULL_IMAGE}" "docker://${FULL_IMAGE}"
+buildah push \
+  --authfile "${AUTHFILE}" \
+  --storage-driver "${STORAGE_DRIVER}" \
+  "${FULL_IMAGE}" \
+  "docker://${FULL_IMAGE}"
 
 echo "Pushed ${FULL_IMAGE}"

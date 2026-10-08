@@ -43,7 +43,7 @@ spec:
               value: redhatai-qwen3-8b-fp8-dynamic
             # Repo without tag; script pushes :unverified
             - name: MODELCAR_IMAGE
-              value: quay.io/CHANGE_ME/modelcar-redhatai-qwen3-8b-fp8-dynamic
+              value: quay.io/sudash/modelcar-redhatai-qwen3-8b-fp8-dynamic
             - name: MODELCAR_TAG
               value: unverified
             - name: CONTEXT_DIR
