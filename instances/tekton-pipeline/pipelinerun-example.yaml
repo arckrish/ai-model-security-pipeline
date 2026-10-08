@@ -1,12 +1,14 @@
-# Example PipelineRun for RedHatAI/Qwen3-8B-FP8-dynamic — edit model-id if needed, then:
+# Example PipelineRun for RedHatAI/Qwen3-8B-FP8-dynamic — edit model-id / modelcar-image /
+# serving-yaml for other models, then:
 #   oc create -f instances/tekton-pipeline/pipelinerun-example.yaml
 #
 # Prerequisites:
-#   - model-fetch Job completed (MinIO models-ingress/redhatai-qwen3-8b-fp8-dynamic/)
-#   - minio-s3 secret in model-eval and model-sandbox
+#   - model-fetch Job completed (pushed …/modelcar-<model-id>:unverified)
+#   - Quay pull secret in model-eval + model-sandbox + model-test
 #   - oc apply -k instances/model-sandbox/ (namespace persists)
-#   - Scanner + publish images built (Phase 5)
+#   - Scanner + publish images built (Phase 3); rebuild publish after ModelCar changes
 #   - git-url reachable from model-eval (HTTPS)
+#   - Set modelcar-image to your Quay repo (match Job MODELCAR_IMAGE)
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
@@ -21,6 +23,8 @@ spec:
   params:
     - name: model-id
       value: redhatai-qwen3-8b-fp8-dynamic
+    - name: modelcar-image
+      value: quay.io/CHANGE_ME/modelcar-redhatai-qwen3-8b-fp8-dynamic
     - name: model-path
       value: /workspace/models
     - name: git-url
@@ -28,9 +32,9 @@ spec:
     - name: git-revision
       value: cluster-install
     - name: model-sandbox-path
-      value: instances/model-sandbox
-    - name: model-test-path
-      value: instances/model-test
+      value: instances/model-sandbox/LLMInferenceService.yaml
+    - name: serving-yaml
+      value: instances/model-test/qwen3-8b-fp8-verified.yaml
   workspaces:
     - name: shared-data
       persistentVolumeClaim:

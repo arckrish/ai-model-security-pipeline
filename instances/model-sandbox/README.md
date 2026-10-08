@@ -5,7 +5,7 @@ Persistent namespace for **untrusted** eval serving. The pipeline does not creat
 | Applied by | Files |
 |------------|--------|
 | Overlay 04 / `oc apply -k` (once) | namespace, NetworkPolicy, RBAC |
-| `serve-llm-start` | `LLMInferenceService.yaml` after patching name + `s3://models-ingress/<model-id>/` |
+| `serve-llm-start` | `LLMInferenceService.yaml` — placeholder image → `oci://…:unverified` |
 | `serve-llm-stop` | Deletes the CR only |
 
-Copy `minio-s3` into this namespace (same secret as other zones). KServe reads S3 annotations on that Secret.
+Quay pull secret must exist in this namespace (gitops-scripts Phase 2) so KServe can pull the ModelCar image.

@@ -4,7 +4,7 @@ USER root
 RUN curl -fsSL https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z -o /tmp/mc && \
     install -m 0755 /tmp/mc /usr/bin/mc && \
     rm -f /tmp/mc && \
-    dnf install -y jq git && dnf clean all && \
+    dnf install -y jq git skopeo && dnf clean all && \
     pip3 install --no-cache-dir pyyaml
 USER 1001
 COPY scripts/ /scripts/

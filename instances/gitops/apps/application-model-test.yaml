@@ -1,7 +1,7 @@
-# Sync wave 16 — Argo CD Application for verified model promotion to model-test.
-# Promotion to model-prod is manual and is not handled by this Application.
+# Sync wave 16 — optional GitOps view of verified serving YAML in model-test.
+# publish-artifact oc-applies the patched YAML (placeholder → verified ModelCar tag).
+# Automated sync is off so Argo does not overwrite the live URI with oci://PLACEHOLDER.
 # Edit spec.source.repoURL to your fork before applying the App-of-Apps root.
-# Requires qwen3-8b-fp8-verified.yaml committed (or generated then pushed) under instances/model-test.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -28,6 +28,3 @@ spec:
     syncOptions:
       - CreateNamespace=false
       - SkipDryRunOnMissingResource=true
-    automated:
-      prune: true
-      selfHeal: true

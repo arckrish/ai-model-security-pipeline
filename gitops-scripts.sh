@@ -15,8 +15,9 @@
 #     APPS_DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
 #     echo "inference-gateway.${APPS_DOMAIN}"
 #   Edit instances/gateway/gateway.yaml hostname (REPLACE_WITH_CLUSTER_APPS_DOMAIN)
-#   Credentials: cp .env.example .env and set HF_TOKEN, QUAY_*, MINIO_ROOT_*
+#   Credentials: cp .env.example .env and set HF_TOKEN, QUAY_*, MINIO_ROOT_*, MODELCAR_IMAGE
 #   (gitops-scripts.sh creates cluster Secrets from .env — no quay/minio yaml files)
+#   Model weights: ModelCar OCI on Quay (:unverified → :verified-score-build*). MinIO = scans only.
 #
 # Run phase-by-phase: copy/paste each phase block into your shell
 # (do not run bash gitops-scripts.sh end-to-end).
@@ -124,7 +125,7 @@ for ns in "${NS_MODEL_INGRESS}" "${NS_MODEL_EVAL}" "${NS_MODEL_SANDBOX}" "${NS_M
     "serving.kserve.io/s3-usevirtualbucket=false"
 done
 
-for ns in "${NS_MODEL_INGRESS}" "${NS_MODEL_EVAL}" "${NS_BUILD_IMAGE}" "${NS_MODEL_TEST}"; do
+for ns in "${NS_MODEL_INGRESS}" "${NS_MODEL_EVAL}" "${NS_MODEL_SANDBOX}" "${NS_BUILD_IMAGE}" "${NS_MODEL_TEST}"; do
   oc create secret docker-registry "${QUAY_SECRET_NAME}" \
     --docker-server="${QUAY_SERVER}" \
     --docker-username="${QUAY_USERNAME}" \
@@ -135,6 +136,21 @@ for ns in "${NS_MODEL_INGRESS}" "${NS_MODEL_EVAL}" "${NS_BUILD_IMAGE}" "${NS_MOD
 done
 
 oc secrets link builder "${QUAY_SECRET_NAME}" -n "${NS_BUILD_IMAGE}"
+# ModelCar SA + ConfigMap come from Argo ai-sec-model-ingress (instances/model-ingress).
+# Ensure ai-sec-model-ingress is Synced before linking Quay / SCC for the one-shot Job.
+for _ in $(seq 1 60); do
+  oc get sa model-fetch -n "${NS_MODEL_INGRESS}" >/dev/null 2>&1 && break
+  sleep 5
+done
+oc get sa model-fetch -n "${NS_MODEL_INGRESS}"
+oc secrets link model-fetch "${QUAY_SECRET_NAME}" -n "${NS_MODEL_INGRESS}" --for=pull,mount 2>/dev/null \
+  || oc secrets link model-fetch "${QUAY_SECRET_NAME}" -n "${NS_MODEL_INGRESS}" || true
+oc adm policy add-scc-to-user privileged -z model-fetch -n "${NS_MODEL_INGRESS}" || true
+for sa in default model-eval-pipeline; do
+  oc secrets link "${sa}" "${QUAY_SECRET_NAME}" -n "${NS_MODEL_EVAL}" --for=pull 2>/dev/null || true
+done
+oc secrets link default "${QUAY_SECRET_NAME}" -n "${NS_MODEL_SANDBOX}" --for=pull 2>/dev/null || true
+oc secrets link default "${QUAY_SECRET_NAME}" -n "${NS_MODEL_TEST}" --for=pull 2>/dev/null || true
 
 oc create secret generic hf-token -n "${NS_MODEL_INGRESS}" \
   --from-literal=HF_TOKEN="${HF_TOKEN}" \
@@ -205,9 +221,11 @@ oc get authorino authorino -n kuadrant-system \
   -o jsonpath='Ready={.status.conditions[?(@.type=="Ready")].status} reason={.status.conditions[?(@.type=="Ready")].reason}{"\n"}'
 
 # =============================================================================
-# Phase 5: Fetch model + live PipelineRun (script.sh Phase 10 + live pipeline)
+# Phase 5: Build ModelCar (:unverified) + live PipelineRun
 # Prerequisites: Argo apps 07–12 Synced (Tasks, Pipeline, Triggers, Chains, RHOAI).
-# Edit git-url in pipelinerun-example.yaml to a reachable HTTPS repo first.
+# Edit MODELCAR_IMAGE in model-fetch-job.yaml and pipelinerun-example.yaml (same value).
+# Edit git-url / serving-yaml in pipelinerun-example.yaml as needed.
+# Rebuild publish image after ModelCar changes: oc start-build ai-security-publish --from-dir=builds/publish --follow -n build-image
 # =============================================================================
 # Wait until RHOAI / Model Registry are Ready (needed before publish-artifact):
 #   oc get application ai-sec-11-rhoai ai-sec-12-rhoai-dashboard -n "${NS_GITOPS}"
@@ -215,19 +233,21 @@ oc get authorino authorino -n kuadrant-system \
 #   oc wait --for=jsonpath='{.status.phase}'=Ready datasciencecluster/default-dsc --timeout=600s
 #   oc wait --for=condition=Available mr/model-registry -n rhoai-model-registries --timeout=600s
 
+# One-shot Job only (SA + modelcar-build ConfigMap already synced via model-ingress):
+oc delete job/model-fetch -n "${NS_MODEL_INGRESS}" --ignore-not-found
 oc apply -f ./instances/model-ingress-fetch/model-fetch-job.yaml -n "${NS_MODEL_INGRESS}"
 oc wait --for=condition=complete job/model-fetch -n "${NS_MODEL_INGRESS}" --timeout=7200s
 
-# Confirm sandbox is empty of a leftover eval-* CR, then start the pipeline:
+# Confirm sandbox is empty of a leftover eval CR, then start the pipeline:
 oc get llminferenceservice -n "${NS_MODEL_SANDBOX}"
-oc get secret minio-s3 -n "${NS_MODEL_SANDBOX}"
 oc get pipeline.tekton.dev model-security-pipeline -n "${NS_MODEL_EVAL}" \
-  -o jsonpath='{.spec.params[?(@.name=="git-url")].default}{"\n"}'
+  -o jsonpath='{.spec.params[?(@.name=="modelcar-image")].name}{"\n"}'
 
-#cleanup any instance tunning in "${NS_MODEL_TEST}"
+# cleanup any instance running in "${NS_MODEL_TEST}"
 oc get llminferenceservice -n "${NS_MODEL_TEST}"
 oc delete llminferenceservice -n "${NS_MODEL_TEST}" --all
 
+# Set modelcar-image in pipelinerun-example.yaml to match Job MODELCAR_IMAGE first.
 oc create -f ./instances/tekton-pipeline/pipelinerun-example.yaml -n "${NS_MODEL_EVAL}"
 oc get pipelinerun -n "${NS_MODEL_EVAL}" -w
 
@@ -237,8 +257,8 @@ oc get pipelinerun -n "${NS_MODEL_EVAL}" -w
 # After finally: CR deleted, namespace remains:
 #   oc get ns "${NS_MODEL_SANDBOX}"
 #   oc get llminferenceservice -n "${NS_MODEL_SANDBOX}"
-# Auto-pass or review: publish-artifact copies weights to models-verified, registers
-# Model Registry, and oc apply's the patched LLMInferenceService in model-test.
+# Auto-pass or review: publish-artifact retags ModelCar to :verified-score-buildVERSION,
+# registers Model Registry (oci:// URI), and oc apply's serving-yaml with placeholder replaced.
 
 # =============================================================================
 # Phase 6: Test serving (overlay 16 — not an Argo app; gitignored generated files)

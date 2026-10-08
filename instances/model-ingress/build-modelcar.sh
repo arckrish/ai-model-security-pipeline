@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Build and push ModelCar image tagged :unverified (no MinIO weight upload).
+set -euo pipefail
+
+HF_REPO="${HF_REPO:?HF_REPO required}"
+MODEL_ID="${MODEL_ID:?MODEL_ID required}"
+MODELCAR_IMAGE="${MODELCAR_IMAGE:?MODELCAR_IMAGE required (repo without tag)}"
+CONTEXT_DIR="${CONTEXT_DIR:-/build}"
+TAG="${MODELCAR_TAG:-unverified}"
+FULL_IMAGE="${MODELCAR_IMAGE}:${TAG}"
+
+export STORAGE_DRIVER="${STORAGE_DRIVER:-vfs}"
+export BUILDAH_ISOLATION="${BUILDAH_ISOLATION:-chroot}"
+
+echo "Building ModelCar ${FULL_IMAGE} from HF_REPO=${HF_REPO} MODEL_ID=${MODEL_ID}"
+
+AUTHFILE="${REGISTRY_AUTH_FILE:-/tmp/auth.json}"
+export REGISTRY_AUTH_FILE="${AUTHFILE}"
+if [[ -f /var/run/secrets/kubernetes.io/dockerconfigjson/.dockerconfigjson ]]; then
+  cp /var/run/secrets/kubernetes.io/dockerconfigjson/.dockerconfigjson "${AUTHFILE}"
+elif [[ -f /run/secrets/quay/.dockerconfigjson ]]; then
+  cp /run/secrets/quay/.dockerconfigjson "${AUTHFILE}"
+fi
+
+build_args=(
+  bud
+  --storage-driver "${STORAGE_DRIVER}"
+  --isolation "${BUILDAH_ISOLATION}"
+  -f "${CONTEXT_DIR}/Containerfile"
+  -t "${FULL_IMAGE}"
+  --build-arg "HF_REPO=${HF_REPO}"
+)
+if [[ -n "${HF_TOKEN:-}" ]]; then
+  build_args+=(--build-arg "HF_TOKEN=${HF_TOKEN}")
+fi
+build_args+=("${CONTEXT_DIR}")
+
+buildah "${build_args[@]}"
+buildah push --storage-driver "${STORAGE_DRIVER}" "${FULL_IMAGE}" "docker://${FULL_IMAGE}"
+
+echo "Pushed ${FULL_IMAGE}"

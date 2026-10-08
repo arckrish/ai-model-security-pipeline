@@ -5,11 +5,16 @@ metadata:
   labels:
     app.kubernetes.io/part-of: ai-model-security-pipeline
 spec:
-  description: Validate model artifacts from MinIO ingress through security tasks; promote to Model Registry on pass.
+  description: >
+    Validate ModelCar weights (:unverified) through security tasks; on pass retag
+    :verified-score-buildVERSION and apply caller-supplied serving YAML.
   params:
     - name: model-id
       type: string
-      description: Storage key under models-ingress/ (e.g. redhatai-qwen3-8b-fp8-dynamic)
+      description: Model id (must match model-fetch Job MODEL_ID)
+    - name: modelcar-image
+      type: string
+      description: ModelCar repository without tag (Quay), e.g. quay.io/org/modelcar-redhatai-qwen3-8b-fp8-dynamic
     - name: model-path
       type: string
       default: /workspace/models
@@ -19,15 +24,15 @@ spec:
     - name: git-url
       type: string
       default: https://github.com/sukantadash/ai-model-security-pipeline.git
-      description: Git repo that holds serving YAML (LLMInferenceService templates)
+      description: Git repo that holds serving YAML (LLMInferenceService with oci://PLACEHOLDER)
     - name: model-sandbox-path
       type: string
-      default: instances/model-sandbox
-      description: Path in git-url to sandbox manifests
-    - name: model-test-path
+      default: instances/model-sandbox/LLMInferenceService.yaml
+      description: File path in git-url to sandbox LLMInferenceService YAML
+    - name: serving-yaml
       type: string
-      default: instances/model-test
-      description: Path in git-url to verified serving manifests
+      default: instances/model-test/qwen3-8b-fp8-verified.yaml
+      description: File path in git-url to verified LLMInferenceService YAML (placeholder image only)
     - name: git-revision
       type: string
       default: ''
@@ -49,6 +54,8 @@ spec:
     params:
     - name: model-id
       value: $(params.model-id)
+    - name: modelcar-image
+      value: $(params.modelcar-image)
     workspaces:
     - name: models
       workspace: shared-data
@@ -134,6 +141,8 @@ spec:
     - *id002
     - name: git-url
       value: $(params.git-url)
+    - name: modelcar-image
+      value: $(params.modelcar-image)
     - name: model-sandbox-path
       value: $(params.model-sandbox-path)
     - name: git-revision
@@ -395,14 +404,16 @@ spec:
     params:
     - name: model-id
       value: $(params.model-id)
+    - name: modelcar-image
+      value: $(params.modelcar-image)
     - name: model-registry-namespace
       value: $(params.model-registry-namespace)
     - name: pipeline-run-name
       value: $(context.pipelineRun.name)
     - name: git-url
       value: $(params.git-url)
-    - name: model-test-path
-      value: $(params.model-test-path)
+    - name: serving-yaml
+      value: $(params.serving-yaml)
     - name: git-revision
       value: $(params.git-revision)
     - name: test-namespace
