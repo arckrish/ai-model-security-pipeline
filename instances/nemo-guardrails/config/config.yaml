@@ -1,0 +1,41 @@
+# NeMo Guardrails configuration (RHOAI 3.2 "Enabling AI safety with Guardrails", ch. 3).
+# Template: nemo-guardrails-deploy replaces __MODEL_ENDPOINT__ / __MODEL_NAME__ with the
+# in-cluster predictor URL (…/v1) and model id before creating the per-target ConfigMap.
+#
+# engine must be "openai" to guardrail a vLLM model. The API key comes from the
+# OPENAI_API_KEY env var on the NemoGuardrails CR (service-account token secret).
+models:
+  - type: main
+    engine: openai
+    parameters:
+      openai_api_base: "__MODEL_ENDPOINT__"
+      model_name: "__MODEL_NAME__"
+      temperature: 0.0
+
+rails:
+  config:
+    sensitive_data_detection:
+      input:
+        entities:
+          - EMAIL_ADDRESS
+          - PHONE_NUMBER
+          - CREDIT_CARD
+          - US_SSN
+          - IBAN_CODE
+      output:
+        entities:
+          - PERSON
+          - EMAIL_ADDRESS
+          - PHONE_NUMBER
+          - CREDIT_CARD
+          - US_SSN
+  input:
+    flows:
+      - detect sensitive data on input
+      - check message length
+      - check jailbreak attempt
+      - check forbidden words
+  output:
+    flows:
+      - detect sensitive data on output
+      - check output compliance
