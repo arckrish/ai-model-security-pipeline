@@ -17,4 +17,4 @@ reference/
 
 .env
 .last-pipelinerun
-*.log
+debug-*.log

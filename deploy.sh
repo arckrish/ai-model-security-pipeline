@@ -340,6 +340,7 @@ quay_tag_exists() {
 
 git_https_url() {
   local u=$1
+  [ -z "$u" ] && return 0
   case "$u" in
     git@*:*) u="https://${u#git@}"; u="${u/://}" ;;
     ssh://git@*) u="https://${u#ssh://git@}" ;;
@@ -378,8 +379,9 @@ step_preflight() {
   fi
   if q git rev-parse --git-dir; then
     ok "repo: ${REPO_ROOT} (branch $(git rev-parse --abbrev-ref HEAD), commit $(git rev-parse --short HEAD))"
-  elif [ "$VALIDATE_ONLY" = 1 ]; then
-    warn "${REPO_ROOT} is not a git checkout (fine for --validate-only)"
+  elif [ "$VALIDATE_ONLY" = 1 ] || [ "$FROM_STEP" -gt 3 ]; then
+    # only step 3 (commit + push) needs a local git checkout
+    warn "${REPO_ROOT} is not a git checkout (fine: step 3, commit and push, is not run)"
   else
     fail "${REPO_ROOT} is not a git checkout (no .git folder)"
     info "The install commits and pushes, so run it from a clone: git clone <repo-url> && cd <repo>"
@@ -432,29 +434,109 @@ write_env() {
   ok "saved settings to .env (mode 600; previous copy backed up)"
 }
 
+# ---- Git access ------------------------------------------------------------
+# Argo CD and the pipeline clone the repo from the cluster, so a private repo
+# needs a token stored on the cluster. Access is checked through the GitHub API
+# (independent of the local git install); other hosts fall back to git ls-remote.
+gh_slug() {
+  case "$GIT_URL" in https://github.com/*) local s=${GIT_URL#https://github.com/}; echo "${s%.git}" ;; esac
+}
+gh_api_code() {   # gh_api_code <api path> [token] -> HTTP status
+  if [ -n "${2:-}" ]; then
+    curl -s -o /dev/null -w '%{http_code}' --max-time 20 -H "Authorization: token $2" "https://api.github.com/$1"
+  else
+    curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://api.github.com/$1"
+  fi
+}
+git_ls() {        # git ls-remote that shows git's own error on failure
+  local out
+  if out=$(GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code "$@" 2>&1 >/dev/null); then return 0; fi
+  [ -n "$out" ] && printf '%s\n' "$out" | sed "s#${GIT_TOKEN:-@@none@@}#***#g" | head -3 | sed 's/^/      git: /'
+  return 1
+}
+# Token already stored in this terminal: gh CLI, then git's credential helper (e.g. macOS keychain)
+terminal_github_creds() {
+  TERM_GH_TOKEN=""; TERM_GH_USER=""; TERM_GH_SOURCE=""
+  if command -v gh >/dev/null 2>&1; then
+    TERM_GH_TOKEN=$(gh auth token 2>/dev/null)
+    if [ -n "$TERM_GH_TOKEN" ]; then
+      TERM_GH_USER=$(gh api user --jq .login 2>/dev/null); TERM_GH_SOURCE="gh CLI"; return 0
+    fi
+  fi
+  local cred
+  cred=$(printf 'protocol=https\nhost=github.com\n\n' | GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never git credential fill 2>/dev/null) || true
+  TERM_GH_TOKEN=$(printf '%s\n' "$cred" | sed -n 's/^password=//p')
+  TERM_GH_USER=$(printf '%s\n' "$cred" | sed -n 's/^username=//p')
+  [ -n "$TERM_GH_TOKEN" ] && TERM_GH_SOURCE="git credential helper" && return 0
+  return 1
+}
+# Sets GIT_PRIVATE; returns 0 when the repo is readable (asks for a token if needed and allowed)
+check_git_access() {
+  local interactive=${1:-1} slug code
+  slug=$(gh_slug)
+  if [ -z "$slug" ]; then          # not github.com: use git
+    if git_ls "$GIT_URL"; then GIT_PRIVATE=0; ok "repo readable without credentials"; return 0; fi
+    if [ -n "${GIT_TOKEN:-}" ] && git_ls "$(git_auth_url)"; then GIT_PRIVATE=1; ok "repo readable with the token"; return 0; fi
+    [ "$interactive" = 1 ] || { fail "can't read ${GIT_URL}"; return 1; }
+    ask GIT_USERNAME "Git username" "${GIT_USERNAME:-}"
+    ask_secret GIT_TOKEN "Git access token (read)"
+    if git_ls "$(git_auth_url)"; then GIT_PRIVATE=1; ok "token can read the repo"; return 0; fi
+    fail "can't read ${GIT_URL} with that token"; return 1
+  fi
+  code=$(gh_api_code "repos/${slug}")
+  case "$code" in
+    200) GIT_PRIVATE=0; GIT_USERNAME=""; GIT_TOKEN=""; ok "GitHub repo ${slug} is public (Argo CD needs no credentials)"; return 0 ;;
+    404) GIT_PRIVATE=1; info "GitHub repo ${slug} is private (or doesn't exist): Argo CD and the pipeline need a token" ;;
+    *) warn "couldn't reach the GitHub API (HTTP ${code:-none}); trying git"
+       if git_ls "$GIT_URL"; then GIT_PRIVATE=0; ok "repo readable without credentials"; return 0; fi
+       GIT_PRIVATE=1 ;;
+  esac
+  if [ -n "${GIT_TOKEN:-}" ] && [ "$(gh_api_code "repos/${slug}" "$GIT_TOKEN")" = 200 ]; then
+    ok "saved token can read ${slug}"; return 0
+  fi
+  [ "$interactive" = 1 ] || { fail "no working token for ${slug}"; return 1; }
+  if terminal_github_creds; then
+    info "Found GitHub credentials in this terminal (${TERM_GH_SOURCE}${TERM_GH_USER:+, user ${TERM_GH_USER}})."
+    if confirm "Use them for Argo CD and the pipeline (stored as cluster Secrets)?" y; then
+      if [ "$(gh_api_code "repos/${slug}" "$TERM_GH_TOKEN")" = 200 ]; then
+        GIT_TOKEN=$TERM_GH_TOKEN; GIT_USERNAME=${TERM_GH_USER:-${slug%%/*}}
+        ok "terminal credentials can read ${slug}"; return 0
+      fi
+      warn "those credentials can't read ${slug}"
+    fi
+  else
+    info "No GitHub credentials found in this terminal (gh auth login, or a git credential helper)."
+  fi
+  while true; do
+    ask GIT_USERNAME "GitHub username" "${GIT_USERNAME:-${slug%%/*}}"
+    ask_secret GIT_TOKEN "GitHub personal access token with read access to ${slug}"
+    code=$(gh_api_code "repos/${slug}" "$GIT_TOKEN")
+    [ "$code" = 200 ] && { ok "token can read ${slug}"; return 0; }
+    fail "GitHub answered HTTP ${code} for that token (401 = bad token, 404 = no access to the repo)"
+    confirm "Try another token?" y || return 1
+  done
+}
+check_git_branch() {
+  local slug code; slug=$(gh_slug)
+  if [ -n "$slug" ]; then
+    code=$(gh_api_code "repos/${slug}/branches/${GIT_BRANCH}" "${GIT_TOKEN:-}")
+    [ "$code" = 200 ] && { ok "branch ${GIT_BRANCH} exists on GitHub"; return 0; }
+  elif git_ls --heads "$(git_auth_url)" "$GIT_BRANCH"; then
+    ok "branch ${GIT_BRANCH} exists on the remote"; return 0
+  fi
+  warn "branch ${GIT_BRANCH} not found on the remote (step 3 pushes it; Argo CD needs it)"
+  return 1
+}
+
 collect_git() {
   local def_url def_branch
   def_url=${GIT_URL:-$(git_https_url "$(git remote get-url origin 2>/dev/null)")}
-  def_branch=${GIT_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}
+  def_branch=${GIT_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null)}
   ask GIT_URL "Git repo URL that Argo CD and the pipeline read (HTTPS)" "$def_url"
   GIT_URL=$(git_https_url "$GIT_URL")
   ask GIT_BRANCH "Git branch" "$def_branch"
-  if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code "$GIT_URL" >/dev/null 2>&1; then
-    GIT_PRIVATE=0; ok "repo is readable without credentials (public)"
-    GIT_USERNAME=""; GIT_TOKEN=""
-  else
-    GIT_PRIVATE=1
-    warn "the repo can't be read anonymously (private or wrong URL)"
-    ask GIT_USERNAME "GitHub username (for Argo CD + pipeline clone)" "${GIT_USERNAME:-}"
-    ask_secret GIT_TOKEN "GitHub personal access token (repo read)"
-    if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code "$(git_auth_url)" >/dev/null 2>&1; then ok "credentials can read the repo"
-    else fail "still can't read ${GIT_URL} with these credentials"; return 1; fi
-  fi
-  if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code --heads "$(git_auth_url)" "$GIT_BRANCH" >/dev/null 2>&1; then
-    ok "branch ${GIT_BRANCH} exists on the remote"
-  else
-    warn "branch ${GIT_BRANCH} doesn't exist on the remote yet — step 3 will push it"
-  fi
+  check_git_access 1 || return 1
+  check_git_branch || true
 }
 
 collect_cluster() {
@@ -555,13 +637,8 @@ show_settings() {
 verify_saved() {
   local good=0 d acc
   GIT_URL=$(git_https_url "$GIT_URL")
-  if GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code "$GIT_URL" >/dev/null 2>&1; then
-    GIT_PRIVATE=0; ok "Git repo readable (public)"
-  elif [ -n "${GIT_TOKEN:-}" ] && GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code "$(git_auth_url)" >/dev/null 2>&1; then
-    GIT_PRIVATE=1; ok "Git repo readable with the saved token (private)"
-  else
-    fail "can't read ${GIT_URL}"; good=1
-  fi
+  check_git_access 0 || good=1
+  check_git_branch || good=1
   d=$(jp ingresses.config/cluster -o jsonpath='{.spec.domain}')
   if [ -n "$d" ] && [ "$d" != "$APPS_DOMAIN" ]; then
     warn "saved apps domain ${APPS_DOMAIN} is not this cluster's (${d}) — a different cluster?"; good=1
@@ -1075,6 +1152,13 @@ tasklog() { oc logs -n "$NS_MODEL_EVAL" -l "tekton.dev/pipelineRun=${PR},tekton.
 
 step_pipeline() {
   local left start now el last="" cur choice
+  if [ "${GIT_PRIVATE:-0}" = 1 ] && ! exists secret git-auth -n "$NS_MODEL_EVAL"; then
+    warn "private repo, but no git-auth secret in ${NS_MODEL_EVAL}: the pipeline could not clone it"
+    if confirm "Create git-auth from the token in your settings?" y; then
+      oc create secret generic git-auth -n "$NS_MODEL_EVAL" --from-literal=token="$GIT_TOKEN" \
+        --dry-run=client -o yaml | oc apply -f - >/dev/null && ok "git-auth created"
+    fi
+  fi
   left=$(oc get llminferenceservice,nemoguardrails -n "$NS_MODEL_SANDBOX" -o name 2>/dev/null)
   if [ -n "$left" ]; then
     warn "leftovers in ${NS_MODEL_SANDBOX}: $(echo "$left" | tr '\n' ' ')"
