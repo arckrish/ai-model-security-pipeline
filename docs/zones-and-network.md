@@ -62,7 +62,7 @@ model-ingress  --https:443->  Hugging Face, Quay  (model-fetch: download, push <
 model-eval     --s3:9000-->  minio-system  (models-eval scan JSON, attestations)
 model-eval     --https:443->  Quay  (fetch-artifact extract, publish retag)
 model-eval     --https---->  rhoai-model-registries  (register on auto-pass)
-model-eval     --https---->  redhat-ods-applications (MLflow tracking server, :8443 / :5000)
+model-eval     --https---->  redhat-ods-applications (MLflow tracking server, :8443, path /mlflow)
 MLflow server  --s3:9000-->  minio-system  (mlflow bucket)
 model-test     --https:443->  Quay  (pull <model-id>-verified-<score>-<version>)
 ```

@@ -20,7 +20,7 @@ spec:
     - name: mlflow-tracking-uri
       type: string
       default: ''
-      description: MLflow tracking server URL; empty = do not log to MLflow
+      description: MLflow tracking server URL incl. static prefix (…svc:8443/mlflow); empty = do not log to MLflow
     - name: mlflow-experiment
       type: string
       default: ai-model-security-pipeline

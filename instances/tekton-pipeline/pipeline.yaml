@@ -46,8 +46,9 @@ spec:
       type: string
       default: ''
       description: >
-        MLflow tracking server (instances/mlflow). archive-results logs one MLflow run per
-        PipelineRun to workspace model-eval. Empty = no MLflow logging.
+        MLflow tracking server (instances/mlflow), including its static prefix, e.g.
+        https://mlflow.redhat-ods-applications.svc:8443/mlflow. archive-results logs one MLflow
+        run per PipelineRun to workspace model-eval. Empty = no MLflow logging.
     - name: nemo-guardrails-enabled
       type: string
       default: 'true'

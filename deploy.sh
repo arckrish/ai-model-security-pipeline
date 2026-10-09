@@ -1116,12 +1116,20 @@ mlflow_ready() {   # the tracking server Deployment (not the operator, not the d
     | select(.metadata.name | test("^mlflow") and (test("operator|ui") | not))
     | select((.status.availableReplicas // 0) >= 1)] | length > 0' >/dev/null
 }
-mlflow_discover_uri() {   # prints https://<svc>.<ns>.svc:<port> for the tracking server Service
-  oc get svc -n "$RHOAI_NS" -o json 2>/dev/null | jq -r --arg ns "$RHOAI_NS" '[.items[]
+mlflow_static_prefix() {   # the server's --static-prefix (RHOAI 3.5 starts it with /mlflow); API and /health live under it
+  oc get deploy -n "$RHOAI_NS" -o json 2>/dev/null | jq -r '[.items[]
+    | select(.metadata.name | test("^mlflow") and (test("operator|ui") | not))
+    | .spec.template.spec.containers[] | ((.command // []) + (.args // []))[]
+    | select(startswith("--static-prefix=")) | ltrimstr("--static-prefix=")] | first // empty' | sed 's#/*$##'
+}
+mlflow_discover_uri() {   # prints https://<svc>.<ns>.svc:<port><static-prefix> for the tracking server
+  local base
+  base=$(oc get svc -n "$RHOAI_NS" -o json 2>/dev/null | jq -r --arg ns "$RHOAI_NS" '[.items[]
     | select(.metadata.name | test("^mlflow") and (test("operator|ui|metrics") | not))
     | {n: .metadata.name, p: (.spec.ports[0].port), pn: (.spec.ports[0].name // "")}] | first // empty
     | (if (.p == 8443 or .p == 443 or (.pn | test("https"))) then "https" else "http" end)
-      + "://\(.n).\($ns).svc:\(.p)"'
+      + "://\(.n).\($ns).svc:\(.p)"')
+  [ -n "$base" ] && printf '%s%s\n' "$base" "$(mlflow_static_prefix)"
 }
 mlflow_check_from_eval() {   # HTTP code of <uri>/health from a pod in model-eval (same NetworkPolicy as the pipeline)
   local img="image-registry.openshift-image-registry.svc:5000/${NS_BUILD_IMAGE}/ai-security-publish:latest"
@@ -1137,6 +1145,13 @@ step_mlflow() {   # called from step 12: server up, URI known, reachable from mo
   [ -z "${MLFLOW_TRACKING_URI:-}" ] && MLFLOW_TRACKING_URI=$(mlflow_discover_uri)
   [ -n "$MLFLOW_TRACKING_URI" ] || { warn "could not find the MLflow tracking Service in ${RHOAI_NS}"; return 1; }
   code=$(mlflow_check_from_eval "$MLFLOW_TRACKING_URI")
+  if [ "$code" = 404 ]; then   # e.g. a URI saved without the /mlflow prefix: rediscover once
+    local found; found=$(mlflow_discover_uri)
+    if [ -n "$found" ] && [ "$found" != "$MLFLOW_TRACKING_URI" ]; then
+      info "MLflow answered 404 at ${MLFLOW_TRACKING_URI}; trying ${found}"
+      MLFLOW_TRACKING_URI=$found; code=$(mlflow_check_from_eval "$MLFLOW_TRACKING_URI")
+    fi
+  fi
   if [ "$code" = 200 ]; then
     ok "MLflow reachable from ${NS_MODEL_EVAL}: ${MLFLOW_TRACKING_URI}"
   else

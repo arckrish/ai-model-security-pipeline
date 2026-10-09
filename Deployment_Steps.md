@@ -685,13 +685,15 @@ Every PipelineRun is also logged to **MLflow** (RHOAI 3.5, *Working with MLflow*
 
 **Turn it on.** `./deploy.sh` does this in step 12: it waits for the server, finds its Service, checks it from a pod in `model-eval` (same NetworkPolicy as the pipeline), saves `MLFLOW_TRACKING_URI` to `.env` and passes it to every PipelineRun. By hand:
 ```bash
-oc get svc -n redhat-ods-applications | grep -i mlflow          # the tracking server's Service and port
-export MLFLOW_TRACKING_URI=https://<service>.redhat-ods-applications.svc:<port>
+oc get svc mlflow -n redhat-ods-applications                    # tracking server Service (8443/TCP)
+oc get deploy mlflow -n redhat-ods-applications -o jsonpath='{.spec.template.spec.containers[0].args}' \
+  | tr ',' '\n' | grep static-prefix                             # --static-prefix=/mlflow: API lives under it
+export MLFLOW_TRACKING_URI=https://mlflow.redhat-ods-applications.svc:8443/mlflow
 oc run mlflow-check -n ${NS_MODEL_EVAL} --rm -i --restart=Never \
   --image=image-registry.openshift-image-registry.svc:5000/build-image/ai-security-publish:latest \
   --command -- curl -sk -o /dev/null -w '%{http_code}\n' "${MLFLOW_TRACKING_URI}/health"    # 200
 ```
-Then add `- {name: mlflow-tracking-uri, value: "${MLFLOW_TRACKING_URI}"}` to the PipelineRun (5.3). Rebuild `ai-security-publish` once (step 4.5) — it now includes the MLflow client.
+The URI must end in the server's static prefix (`/mlflow` on RHOAI 3.5): without it `/health` and the API answer `404`. An anonymous API call answers `401`; the pipeline authenticates with its service-account token. Then add `- {name: mlflow-tracking-uri, value: "${MLFLOW_TRACKING_URI}"}` to the PipelineRun (5.3). Rebuild `ai-security-publish` once (step 4.5) — it now includes the MLflow client.
 
 **Compare.** RHOAI dashboard → project `model-eval` → **Develop & train → Experiments (MLflow)** → `ai-model-security-pipeline` → tick the runs → **Compare**. Useful views: a table with **Show differences only**; a parallel-coordinates plot over `S_static`, `S_capability`, `S_redteam`, `guardrails_attack_block_rate`; a scatter of `S_redteam` against `guardrails_false_positive_rate`. Group or filter by tag `model_id` to follow one model across reruns.
 
@@ -834,6 +836,8 @@ oc annotate applications.argoproj.io ai-sec-02-operators -n openshift-gitops arg
 | `oc get mlflow mlflow` → not found | `ai-sec-12-rhoai-dashboard` not synced, or `mlflowoperator` not `Managed` in the DSC (the `v1` DSC API has no such field — `instances/rhoai/datasciencecluster.yaml` must be `v2`) |
 | MLflow pod `CreateContainerConfigError` | Secret `mlflow-s3-credentials` missing in `redhat-ods-applications` (step 4.4) |
 | MLflow can't write artifacts (`NoSuchBucket`, timeouts to MinIO) | Bucket Job `minio-bucket-init-mlflow` not complete, or the server's egress to `minio-system:9000` is blocked (`networkPolicyAdditionalEgressRules` in `instances/mlflow/mlflow.yaml`) |
+| `mlflow-check` prints `404` / `[log-mlflow] WARNING … 404` | Tracking URI is missing the server's `--static-prefix`: use `https://mlflow.redhat-ods-applications.svc:8443/mlflow` (`./deploy.sh --from-step 12` rediscovers it and updates `.env`) |
+| `mlflow-check` prints `000` | `model-eval` egress to `redhat-ods-applications:8443` not applied: Argo must track the branch with that rule in `instances/model-eval/networkpolicy.yaml` |
 | `[log-mlflow] skipping` | `mlflow-tracking-uri` empty for that PipelineRun (5.7) |
 | `[log-mlflow] WARNING … Connection` / timeout | `model-eval` NetworkPolicy doesn't allow the server's port: compare `oc get svc -n redhat-ods-applications <mlflow-svc> -o jsonpath='{.spec.ports[*].targetPort}'` with the `redhat-ods-applications` rule in `instances/model-eval/networkpolicy.yaml` |
 | `[log-mlflow] WARNING … 403` / `PERMISSION_DENIED` | RoleBinding `model-eval-pipeline-mlflow` missing (`ai-sec-04-zones`) |
