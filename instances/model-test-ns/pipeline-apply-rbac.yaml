@@ -22,6 +22,10 @@ rules:
   - apiGroups: ["trustyai.opendatahub.io"]
     resources: ["nemoguardrails"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # nemo-guardrails-deploy waits for / restarts the operator-created Deployment
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
