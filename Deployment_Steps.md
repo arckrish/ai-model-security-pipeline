@@ -9,10 +9,32 @@ This guide matches the merged `cluster-install` branch, which contains ModelCar 
 >
 > **`script.sh` and `gitops-scripts.sh`.** Both are *runbooks*: lists of commands you copy and paste one block at a time. Never run them with `bash script.sh`. `gitops-scripts.sh` is the team's current runbook, and this guide follows it, adds the NeMo Guardrails and test steps, and explains each step. `script.sh` is the older manual path and doesn't cover ModelCar (see [Appendix B](#appendix-b--the-manual-scriptsh-path)).
 
+## Quick path: `deploy.sh` (interactive installer)
+
+`deploy.sh` runs sections 3–5 of this guide for you on a new cluster. It **is** meant to be run end to end:
+
+```bash
+oc login --token=<token> --server=https://api.<cluster>:6443     # as cluster-admin
+./deploy.sh                    # full install (about 3–5 h, mostly waiting)
+./deploy.sh --from-step 10     # resume at a step (settings are re-checked first)
+./deploy.sh --validate-only    # only the final component check
+./deploy.sh --yes              # don't ask before each step (settings are still confirmed)
+```
+
+What it does:
+- **Asks for everything cluster-specific** and validates it before changing anything: Git URL and branch (checks they're readable, asks for a token if private), apps domain (read from the cluster), `ClusterIssuer` (lists the ones that exist), Quay user/password (tests **push** rights to the ModelCar repo), ModelCar image (rejects tags), MinIO password (≥ 8 chars), Hugging Face token. It shows all settings (secrets masked) and waits for your confirmation, then offers to save them to the git-ignored `.env` (mode 600).
+- **Asks before each step** (`Enter` = run, `s` = skip, `q` = quit). On a failure: `r` retry, `s` skip, `q` quit. Long waits time out with a prompt to keep waiting.
+- **Steps:** 1 preflight · 2 settings · 3 repoURL/branch/gateway host/issuer edits, commit and push (shows the diff first) · 4 GitOps operator (installs if missing) · 5 GPU nodes (memory-size check; can run the AWS MachineSet helper) · 6 Argo CD sizing, permissions, private-repo credentials · 7 App-of-Apps (offers to approve manual InstallPlans) · 8 MinIO · 9 zone secrets · 10 images · 11 Authorino · 12 wait for the platform · 13 test-zone resources · 14 ModelCar (skips if `:unverified` exists) · 15 unit tests · 16 full PipelineRun · 17 validation.
+- **Ends with a summary** of every step (DONE / SKIPPED / FAILED) and a PASS / WARN / FAIL table for each component: Argo CD apps, GPUs, operators, MinIO, secrets, images, Tekton, RHOAI, Model Registry, Authorino, gateway, NeMo setup, ModelCar, the PipelineRun and score, the sandbox NeMo probes, the verified model, and the guarded route (401 without token, normal answer, and the forbidden-words, jailbreak, sensitive-data and message-length rails).
+- Everything is logged to `deploy-<timestamp>.log` (secrets are never printed). Needs `oc`, `git`, `jq`, `curl`, `perl`; works with the macOS default bash 3.2.
+
+If a step fails, the matching section below explains it in detail.
+
 ---
 
 ## Contents
 
+0. [Quick path: deploy.sh](#quick-path-deploysh-interactive-installer)
 1. [What gets deployed](#1-what-gets-deployed)
 2. [Prerequisites](#2-prerequisites)
 3. [Prepare the repo and your credentials](#3-prepare-the-repo-and-your-credentials)
@@ -711,6 +733,7 @@ oc annotate applications.argoproj.io ai-sec-02-operators -n openshift-gitops arg
 | Route `403 Forbidden (user=…test-user, verb=get, resource=services)` | `test-user` needs namespace-wide `get services` in `model-test` (`instances/model-test-ns/serving-rbac.yaml`). A Role limited by `resourceNames` is denied, because kube-rbac-proxy ignores the operator's `resourceName` |
 | Route `401` | Missing or expired token: `TOKEN="$(oc create token test-user -n model-test)"` |
 | `nemo-guardrails-deploy`: `cannot get resource "deployments" … in "model-test"` | `ai-sec-04-zones` not synced with the current `model-test-ns/pipeline-apply-rbac.yaml` |
+| Probe log `sensitive-data-input: ERROR timed out` (other probes fine), or e-mail prompts take minutes | Presidio's e-mail check uses `tldextract`, which downloads the public suffix list from publicsuffix.org / GitHub on first use. `model-sandbox` drops internet traffic, so the download hangs. `nemo-guardrails-deploy` sets `TLDEXTRACT_CACHE_TIMEOUT=2` on the NeMo pod so it falls back to the bundled list after 2 s; check with `oc get deploy -n model-sandbox -l app=guardrails-${VER} -o yaml \| grep -A1 TLDEXTRACT`. Other slow rails: raise `NEMO_PROBE_TIMEOUT` (default 180 s) |
 | Probe log `ERROR server replied 'Internal server error.'` or `Could not load the …` | NeMo itself failed. Read the traceback: `oc logs -n <ns> -l app=<cr-name> -c nemo-guardrails --tail=200 \| grep -v 'GET / HTTP'` |
 | Leftovers after a cancelled run | `oc delete llminferenceservice,nemoguardrails --all -n model-sandbox; oc delete cm -n model-sandbox -l ai.security.pipeline/component=nemo-guardrails` |
 

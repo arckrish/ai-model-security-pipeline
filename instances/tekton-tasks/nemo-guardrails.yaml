@@ -199,6 +199,12 @@ spec:
                 key: token
           - name: NEMO_MAX_WORDS
             value: "$(params.max-words)"
+          # Presidio's email recognizer uses tldextract, which downloads the public
+          # suffix list (publicsuffix.org, GitHub) on first use. model-sandbox has no
+          # internet egress, so without a timeout the first e-mail check hangs for
+          # minutes on dropped connections. Fall back to the bundled list after 2 s.
+          - name: TLDEXTRACT_CACHE_TIMEOUT
+            value: "2"
       EOF
       cat "${WORK}/cr.yaml"
       oc apply -n "${NS}" -f "${WORK}/cr.yaml"

@@ -2,7 +2,7 @@
 # =============================================================================
 # deploy.sh — interactive installer for the AI Model Security Pipeline
 #
-# Automates Deployment_steps.md (GitOps path) on a new OpenShift cluster:
+# Automates Deployment_Steps.md (GitOps path) on a new OpenShift cluster:
 #   1  Preflight checks                 10 Build pipeline images
 #   2  Collect and confirm settings     11 Authorino certificate
 #   3  Point the repo at your Git/cluster (commit + push)
@@ -363,10 +363,28 @@ step_preflight() {
   if command -v python3 >/dev/null 2>&1; then ok "python3 found (local unit tests)"; else warn "python3 not found — local unit tests will be skipped"; fi
   [ $missing -eq 1 ] && { note "install the missing tools"; return 1; }
 
-  [ -f instances/gitops/application-root.yaml ] && [ -f Deployment_Steps.md ] \
-    || { note "run deploy.sh from the repo root"; return 1; }
-  q git rev-parse --git-dir || { note "not a git checkout (clone the repo with git)"; return 1; }
-  ok "repo: ${REPO_ROOT} (branch $(git rev-parse --abbrev-ref HEAD), commit $(git rev-parse --short HEAD))"
+  local f absent=""
+  for f in instances/gitops/application-root.yaml instances/gitops/apps instances/gateway/gateway.yaml \
+           instances/gateway/tlspolicy.yaml instances/model-ingress-fetch/model-fetch-job.yaml \
+           instances/tekton-tasks/adversarial-test-unit-taskruns.yaml overlays/16-test-serving \
+           operators/openshift-gitops builds/adversarial-test; do
+    [ -e "$f" ] || absent="$absent $f"
+  done
+  if [ -n "$absent" ]; then
+    fail "deploy.sh must sit in the root of an up-to-date repo checkout (${REPO_ROOT})"
+    info "missing here:${absent}"
+    info "Put deploy.sh in the repo root, or update the checkout: git pull origin <branch>"
+    note "repo files missing:${absent}"; return 1
+  fi
+  if q git rev-parse --git-dir; then
+    ok "repo: ${REPO_ROOT} (branch $(git rev-parse --abbrev-ref HEAD), commit $(git rev-parse --short HEAD))"
+  elif [ "$VALIDATE_ONLY" = 1 ]; then
+    warn "${REPO_ROOT} is not a git checkout (fine for --validate-only)"
+  else
+    fail "${REPO_ROOT} is not a git checkout (no .git folder)"
+    info "The install commits and pushes, so run it from a clone: git clone <repo-url> && cd <repo>"
+    note "not a git checkout"; return 1
+  fi
 
   if ! OC_USER=$(oc whoami 2>/dev/null); then
     fail "oc is not logged in"
