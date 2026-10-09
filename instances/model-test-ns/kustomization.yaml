@@ -11,3 +11,4 @@ resources:
   - pipeline-apply-rbac.yaml
   # NeMo Guardrails SA + view RoleBinding + API token Secret (used by nemo-guardrails-test)
   - nemo-guardrails-serviceaccount.yaml
+  - networkpolicy-nemo-guardrails-apiserver.yaml
