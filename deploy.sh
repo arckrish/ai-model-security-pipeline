@@ -428,12 +428,20 @@ step_preflight() {
     info "Put deploy.sh in the repo root, or update the checkout: git pull origin <branch>"
     note "repo files missing:${absent}"; return 1
   fi
-  if q git rev-parse --git-dir; then
+  local gerr grc=0
+  gerr=$(git rev-parse --git-dir 2>&1 >/dev/null) || grc=$?
+  if [ "$grc" -eq 0 ]; then
     ok "repo: ${REPO_ROOT} (branch $(git rev-parse --abbrev-ref HEAD), commit $(git rev-parse --short HEAD))"
   elif [ "$VALIDATE_ONLY" = 1 ] || [ "$FROM_STEP" -gt 3 ]; then
     # only step 3 (commit + push) needs a local git checkout
     warn "${REPO_ROOT} is not a git checkout (fine: step 3, commit and push, is not run)"
   else
+    if [ -e .git ]; then
+      fail "git can't read the checkout in ${REPO_ROOT} ($(command -v git)): ${gerr:-unknown error}"
+      info "This script runs git from bash (not your zsh). Check: bash -c 'type -a git; git rev-parse --git-dir'"
+      info "macOS: an 'xcrun: error' means the Xcode command-line tools need: xcode-select --install (or sudo xcodebuild -license accept)"
+      note "git error: ${gerr:-unknown}"; return 1
+    fi
     fail "${REPO_ROOT} is not a git checkout (no .git folder)"
     info "The install commits and pushes, so run it from a clone: git clone <repo-url> && cd <repo>"
     note "not a git checkout"; return 1
@@ -1579,6 +1587,21 @@ step_compare_prepare() {
     use_model "$k"
     printf '      %-26s %-50s %s\n' "$MODEL_LABEL" "$HF_REPO" "${MODELCAR_IMAGE}:${UNVERIFIED_TAG}"
     [ -n "$HF_EXTRA_PATTERNS" ] && need_cm=1
+  done
+  # 0. Hugging Face access: Llama is gated (Meta license), and the token in .env must reach the cluster
+  oc create secret generic hf-token -n "$NS_MODEL_INGRESS" --from-literal=HF_TOKEN="${HF_TOKEN:-}" \
+    --dry-run=client -o yaml | oc apply -f - >/dev/null && ok "hf-token secret matches .env"
+  for k in $COMPARE_KEYS; do
+    use_model "$k"
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 ${HF_TOKEN:+-H "Authorization: Bearer ${HF_TOKEN}"} \
+      "https://huggingface.co/${HF_REPO}/resolve/main/config.json")
+    case "$code" in
+      200|302|307) ok "Hugging Face: can download ${HF_REPO}" ;;
+      401|403) fail "Hugging Face: no access to ${HF_REPO} (HTTP ${code})"
+               info "Accept the license on https://huggingface.co/${HF_REPO} with your HF account, put a read token in .env (HF_TOKEN=hf_...), then retry"
+               rc=1 ;;
+      *) warn "Hugging Face: couldn't check ${HF_REPO} (HTTP ${code:-none}); the ModelCar build will tell" ;;
+    esac
   done
   # 1. the per-model manifests must be on the branch the pipeline clones
   slug=$(gh_slug)
