@@ -13,7 +13,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/arckrish/ai-model-security-pipeline.git
+    repoURL: https://github.com/sukantadash/ai-model-security-pipeline.git
     targetRevision: cluster-install
     path: overlays/11-rhoai
   destination:
