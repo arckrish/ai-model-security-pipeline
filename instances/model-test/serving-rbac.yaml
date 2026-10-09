@@ -26,8 +26,12 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ---
 # Callers of the authenticated NeMo Guardrails route (CR nemo-guardrails, enable-auth=true).
-# The operator's kube-rbac-proxy checks "get services/<cr>-service" in this namespace
-# (resource name differs across TrustyAI operator versions, so both are listed).
+# The operator's kube-rbac-proxy config asks for "get services" with
+# resourceName: <cr>-service, but kube-rbac-proxy reads that field as `name`, so the
+# name is dropped and the check becomes "get services" in this namespace. A role
+# limited by resourceNames is therefore denied (403) even though
+# `oc auth can-i get services/<cr>-service` says yes. Grant namespace-wide get on
+# Services (read-only, model-test only).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -38,7 +42,6 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["services"]
-    resourceNames: ["nemo-guardrails", "nemo-guardrails-service"]
     verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
