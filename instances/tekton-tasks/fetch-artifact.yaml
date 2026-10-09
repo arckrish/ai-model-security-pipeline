@@ -16,7 +16,7 @@ spec:
       type: string
     - name: modelcar-image
       type: string
-      description: ModelCar repository without tag (…:unverified is appended)
+      description: Shared ModelCar repository (tag is model-id-unverified)
     - name: model-path
       type: string
       default: /workspace/models
@@ -39,6 +39,8 @@ spec:
       env:
         - name: MODELCAR_IMAGE
           value: $(params.modelcar-image)
+        - name: MODEL_ID
+          value: $(params.model-id)
         - name: REGISTRY_AUTH_FILE
           value: /run/secrets/quay/config.json
         - name: DOCKER_CONFIG

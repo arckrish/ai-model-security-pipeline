@@ -1,15 +1,16 @@
-# Example PipelineRun for RedHatAI/Qwen3-8B-FP8-dynamic — edit model-id / modelcar-image /
-# serving-yaml for other models, then:
+# Example PipelineRun for RedHatAI/Qwen3-8B-FP8-dynamic — edit model-id / serving-yaml
+# for other models, then:
 #   oc create -f instances/tekton-pipeline/pipelinerun-example.yaml
 #
 # Prerequisites:
-#   - model-fetch Job completed (pushed …/modelcar-<model-id>:unverified)
+#   - model-fetch Job completed
+#     (pushed quay.io/sudash/ai-model-security-pipeline:<model-id>-unverified)
 #   - Quay pull secret in model-eval + model-sandbox + model-test
 #   - oc apply -k instances/model-sandbox/ (namespace persists)
 #   - Scanner + publish images built (Phase 3); rebuild publish after ModelCar changes
 #   - TrustyAI NemoGuardrails CRD present (trustyai: Managed) unless nemo-guardrails-enabled=false
 #   - git-url reachable from model-eval (HTTPS)
-#   - Set modelcar-image to your Quay repo (match Job MODELCAR_IMAGE)
+#   - modelcar-image must match Job MODELCAR_IMAGE (shared repo)
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
@@ -25,7 +26,7 @@ spec:
     - name: model-id
       value: redhatai-qwen3-8b-fp8-dynamic
     - name: modelcar-image
-      value: quay.io/CHANGE_ME/modelcar-redhatai-qwen3-8b-fp8-dynamic
+      value: quay.io/sudash/ai-model-security-pipeline
     - name: model-path
       value: /workspace/models
     - name: git-url

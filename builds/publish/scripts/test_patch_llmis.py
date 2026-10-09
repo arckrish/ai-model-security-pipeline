@@ -33,7 +33,7 @@ class PatchLlmisTest(unittest.TestCase):
             n = patch_path(
                 src,
                 dest,
-                model_uri="oci://quay.io/example/modelcar-redhatai-qwen3-8b-fp8-dynamic:unverified",
+                model_uri="oci://quay.io/sudash/ai-model-security-pipeline:redhatai-qwen3-8b-fp8-dynamic-unverified",
                 namespace="model-sandbox",
             )
             self.assertEqual(n, 1)
@@ -42,7 +42,7 @@ class PatchLlmisTest(unittest.TestCase):
             self.assertEqual(doc["spec"]["model"]["name"], "redhatai-qwen3-8b-fp8-dynamic")
             self.assertEqual(
                 doc["spec"]["model"]["uri"],
-                "oci://quay.io/example/modelcar-redhatai-qwen3-8b-fp8-dynamic:unverified",
+                "oci://quay.io/sudash/ai-model-security-pipeline:redhatai-qwen3-8b-fp8-dynamic-unverified",
             )
             self.assertEqual(doc["metadata"]["namespace"], "model-sandbox")
 
@@ -65,14 +65,14 @@ spec:
             n = patch_path(
                 src,
                 dest,
-                model_uri="oci://quay.io/example/modelcar-redhatai-qwen3-8b-fp8-dynamic:verified-score-build9djp2",
+                model_uri="oci://quay.io/sudash/ai-model-security-pipeline:redhatai-qwen3-8b-fp8-dynamic-verified-87-9djp2",
             )
             self.assertEqual(n, 1)
             doc = yaml.safe_load(dest.read_text())
             self.assertEqual(doc["metadata"]["name"], "qwen3-8b-fp8")
             self.assertEqual(
                 doc["spec"]["model"]["uri"],
-                "oci://quay.io/example/modelcar-redhatai-qwen3-8b-fp8-dynamic:verified-score-build9djp2",
+                "oci://quay.io/sudash/ai-model-security-pipeline:redhatai-qwen3-8b-fp8-dynamic-verified-87-9djp2",
             )
 
     def test_llmis_name(self) -> None:

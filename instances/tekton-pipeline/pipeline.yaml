@@ -6,15 +6,15 @@ metadata:
     app.kubernetes.io/part-of: ai-model-security-pipeline
 spec:
   description: >
-    Validate ModelCar weights (:unverified) through security tasks; on pass retag
-    :verified-score-buildVERSION and apply caller-supplied serving YAML.
+    Validate ModelCar weights (${model-id}-unverified) through security tasks; on pass
+    retag to ${model-id}-verified-SCORE-VERSION and apply caller-supplied serving YAML.
   params:
     - name: model-id
       type: string
-      description: Model id (must match model-fetch Job MODEL_ID)
+      description: Model id (must match model-fetch Job MODEL_ID); used in image tags
     - name: modelcar-image
       type: string
-      description: ModelCar repository without tag (Quay), e.g. quay.io/org/modelcar-redhatai-qwen3-8b-fp8-dynamic
+      description: Shared ModelCar repository, e.g. quay.io/sudash/ai-model-security-pipeline
     - name: model-path
       type: string
       default: /workspace/models

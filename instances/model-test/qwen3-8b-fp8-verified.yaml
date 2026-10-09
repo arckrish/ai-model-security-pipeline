@@ -1,5 +1,5 @@
 # Verified serving YAML. publish-artifact replaces oci://PLACEHOLDER with
-# oci://…:verified-score-build<VERSION>. Pass this file path as serving-yaml.
+# oci://quay.io/sudash/ai-model-security-pipeline:<model-id>-verified-<score>-<version>.
 apiVersion: serving.kserve.io/v1alpha2
 kind: LLMInferenceService
 metadata:
