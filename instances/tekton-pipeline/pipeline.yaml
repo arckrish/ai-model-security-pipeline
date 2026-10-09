@@ -42,6 +42,12 @@ spec:
     - name: test-namespace
       type: string
       default: model-test
+    - name: mlflow-tracking-uri
+      type: string
+      default: ''
+      description: >
+        MLflow tracking server (instances/mlflow). archive-results logs one MLflow run per
+        PipelineRun to workspace model-eval. Empty = no MLflow logging.
     - name: nemo-guardrails-enabled
       type: string
       default: 'true'
@@ -532,3 +538,11 @@ spec:
       value: $(params.model-id)
     - name: pipeline-run-name
       value: $(context.pipelineRun.name)
+    - name: mlflow-tracking-uri
+      value: $(params.mlflow-tracking-uri)
+    - name: modelcar-image
+      value: $(params.modelcar-image)
+    - name: git-url
+      value: $(params.git-url)
+    - name: git-revision
+      value: $(params.git-revision)

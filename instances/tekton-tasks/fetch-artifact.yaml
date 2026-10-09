@@ -53,7 +53,7 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         DEST="$(workspaces.models.path)"
-        IMG="${MODELCAR_IMAGE}:unverified"
+        IMG="${MODELCAR_IMAGE}:${MODEL_ID}-unverified"
         # Large single-layer ModelCars (~9 GB) can drop mid-download from quay.io
         # ("unexpected EOF"). Retry the whole extract with a clean destination.
         ATTEMPTS="${EXTRACT_ATTEMPTS:-4}"

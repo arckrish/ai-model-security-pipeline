@@ -17,7 +17,7 @@ PipelineRun params:
 
 On auto-pass / review, `publish-artifact`:
 
-1. Retags ModelCar `:unverified` → `:verified-score-build<VERSION>`
+1. Retags ModelCar `<model-id>-unverified` → `<model-id>-verified-<score>-<VERSION>`
 2. Registers Model Registry with `oci://…`
 3. Replaces **only** the placeholder URI in `serving-yaml` and `oc apply`s it in `model-test`
 

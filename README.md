@@ -5,7 +5,7 @@
 **Source:** LLM Security Repositories Evaluation  
 **Last updated:** August 27, 2026
 
-**Deploying?** Follow **[Steps to Deploy](Deployment_Steps.md)** (GitOps install, ModelCar, NeMo Guardrails, and tests).
+**Deploying?** Run **`./deploy.sh`** (interactive installer for a new cluster) or follow **[Steps to Deploy](Deployment_Steps.md)** (GitOps install, ModelCar, NeMo Guardrails, and tests). To compare Qwen3, Granite 4.1 and Llama 3.1: `./deploy.sh --compare` (section 5.6).
 
 Design docs and diagrams (architecture, pipeline DAG, scoring, zones, storage, DemoJam) live in **[docs/](docs/)**. Per-subtask **tool tables** (what each scanner does in code) live in **[docs/detailed-design.md](docs/detailed-design.md)**. This README lists task and subtask names only.
 

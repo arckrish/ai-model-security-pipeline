@@ -19,8 +19,9 @@
 | `model-sandbox-path` | param | File path to sandbox LLMIS YAML (placeholder image) |
 | `serving-yaml` | param | File path to verified LLMIS YAML (placeholder image only) |
 | `nemo-guardrails-enabled` | param | Default `'true'`. NeMo Guardrails in sandbox (scored) and in front of the verified model |
+| `mlflow-tracking-uri` | param | MLflow tracking server; `archive-results` logs one MLflow run per PipelineRun. Empty = no MLflow (deploy.sh fills it in) |
 | `test-guardrails-name` | param | Default `nemo-guardrails`. CR / Service / Route name in `model-test` |
-| `shared-data` | workspace | PVC `eval-workspace` — **weights only** (extracted from `:unverified`) |
+| `shared-data` | workspace | PVC `eval-workspace` — **weights only** (extracted from `<model-id>-unverified`) |
 | `results` | workspace | Pod-local `emptyDir` for JSON before S3 upload; not shared across TaskRuns |
 
 Capability-eval and adversarial-test TaskRuns are CPU HTTP clients. GPU is requested by the **sandbox** `LLMInferenceService` in `model-sandbox`.
@@ -107,12 +108,12 @@ HTTP clients against `model-endpoint`. Garak / PyRIT / Promptfoo / LLM Guard are
 |---------------|------|--------|
 | `serve-llm-start` | After static-scan; all later tasks wait | Replace placeholder with `oci://…:<model-id>-unverified`; apply sandbox YAML |
 | `score-gate` | After adversarial merge | Writes `score.json`; Task fails only on `routing=reject` |
-| `publish-artifact` | `when: routing in auto-pass, review` | Retag `:verified-score-buildVERSION`; register MR; apply `serving-yaml` (URI only) |
+| `publish-artifact` | `when: routing in auto-pass, review` | Retag `<model-id>-verified-<score>-VERSION`; register MR; apply `serving-yaml` (URI only) |
 | `nemo-guardrails-start` | After dynamic-scan | `nemo-guardrails-deploy` in `model-sandbox` (auth off); result `endpoint-url` |
 | `nemo-guardrails-test` | After publish, same `when` + `nemo-guardrails-enabled` | `nemo-guardrails-deploy` in `model-test` (auth on, Route `nemo-guardrails`) |
 | `nemo-guardrails-stop` | `finally` | Deletes the sandbox `NemoGuardrails` CR + ConfigMaps |
 | `serve-llm-stop` | `finally` | Deletes the sandbox `LLMInferenceService` (namespace stays) |
-| `archive-results` | `finally` (always) | `manifest.json` in the same scan-result prefix |
+| `archive-results` | `finally` (always) | `manifest.json` in the same scan-result prefix; step `log-mlflow` logs the run to MLflow (`builds/publish/scripts/log_mlflow.py`; never fails the task) |
 
 ## Scanner images
 
@@ -130,6 +131,6 @@ Built in namespace `build-image` (no zone NetworkPolicy). Pulled by Tasks from t
 | `openshift/cli` (in-cluster) | serve-llm, nemo-guardrails-deploy / -delete |
 | TrustyAI NeMo image (operator-managed) | `NemoGuardrails` server pods — not built here |
 | `ai-security-score-gate` | score-gate |
-| `ai-security-publish` | publish-artifact, archive-results |
+| `ai-security-publish` | publish-artifact, archive-results (includes the MLflow client `mlflow-skinny[kubernetes]`) |
 
 See [`builds/README.md`](../builds/README.md).

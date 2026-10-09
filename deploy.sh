@@ -23,6 +23,11 @@
 #   ./deploy.sh --validate-only    only run the final validation (step 17)
 #   ./deploy.sh --yes              don't ask before each step (settings are
 #                                  still shown and must be confirmed)
+#   ./deploy.sh --compare          run the pipeline for Qwen3, Granite 4.1 and
+#                                  Llama 3.1 one after another, then write a
+#                                  side-by-side report (model-comparison-*.md/.html)
+#   ./deploy.sh --compare=granite,llama   only some models (qwen, granite, llama)
+#   ./deploy.sh --compare-report   only rebuild the report from earlier runs
 #   ./deploy.sh --help
 #
 # Works with bash 3.2 (macOS) and later. Needs: oc (cluster-admin), git, jq,
@@ -38,12 +43,49 @@ MODEL_ID="redhatai-qwen3-8b-fp8-dynamic"
 MODEL_TEST_LLMIS="qwen3-8b-fp8"
 SANDBOX_LLMIS_FILE="instances/model-sandbox/LLMInferenceService.yaml"
 SERVING_YAML="instances/model-test/qwen3-8b-fp8-verified.yaml"
-MODELCAR_PLACEHOLDER="quay.io/CHANGE_ME/modelcar-redhatai-qwen3-8b-fp8-dynamic"
 APP_LABEL="app.kubernetes.io/part-of=ai-model-security-pipeline"
 ROOT_APP="ai-model-security-platform"
 EXPECTED_APPS=19            # root + 18 children
 IMAGES="model-fetch static-scan dynamic-test capability-eval adversarial-test score-gate publish"
 ARGO_SA="openshift-gitops-argocd-application-controller"
+
+# ------------------------------------------------------------ model catalog --
+# use_model <key> sets the per-model variables used by steps 13–17 and --compare.
+# Qwen3 is the default and unchanged; Granite and Llama run with thinking off
+# (their chat templates only reason when asked) and --max-model-len 16384.
+MODEL_KEY="qwen"
+MODEL_LABEL="Qwen3 8B FP8"
+HF_REPO="RedHatAI/Qwen3-8B-FP8-dynamic"
+HF_EXTRA_PATTERNS=""
+UNVERIFIED_TAG="redhatai-qwen3-8b-fp8-dynamic-unverified"
+QWEN_HF_REPO="RedHatAI/Qwen3-8B-FP8-dynamic"
+QWEN_MODEL_ID="redhatai-qwen3-8b-fp8-dynamic"
+COMPARE_RUNS_FILE=".compare-runs.tsv"
+use_model() {
+  case "$1" in
+    qwen)
+      MODEL_LABEL="Qwen3 8B FP8"; HF_REPO="$QWEN_HF_REPO"; MODEL_ID="$QWEN_MODEL_ID"
+      MODEL_TEST_LLMIS="qwen3-8b-fp8"; HF_EXTRA_PATTERNS=""
+      SANDBOX_LLMIS_FILE="instances/model-sandbox/LLMInferenceService.yaml"
+      SERVING_YAML="instances/model-test/qwen3-8b-fp8-verified.yaml" ;;
+    granite)
+      MODEL_LABEL="Granite 4.1 8B FP8"; HF_REPO="RedHatAI/granite-4.1-8b-fp8"; MODEL_ID="redhatai-granite-4-1-8b-fp8"
+      MODEL_TEST_LLMIS="granite-4-1-8b-fp8"; HF_EXTRA_PATTERNS="*.jinja"
+      SANDBOX_LLMIS_FILE="instances/model-sandbox/LLMInferenceService-granite-4-1-8b-fp8.yaml"
+      SERVING_YAML="instances/model-test/granite-4-1-8b-fp8-verified.yaml" ;;
+    llama)
+      MODEL_LABEL="Llama 3.1 8B Instruct FP8"; HF_REPO="RedHatAI/Meta-Llama-3.1-8B-Instruct-FP8-dynamic"
+      MODEL_ID="redhatai-llama-3-1-8b-instruct-fp8"; MODEL_TEST_LLMIS="llama-3-1-8b-fp8"; HF_EXTRA_PATTERNS="*.jinja"
+      SANDBOX_LLMIS_FILE="instances/model-sandbox/LLMInferenceService-llama-3-1-8b-fp8.yaml"
+      SERVING_YAML="instances/model-test/llama-3-1-8b-fp8-verified.yaml" ;;
+    *) return 1 ;;
+  esac
+  MODEL_KEY="$1"
+  # All models share one ModelCar repository (.env MODELCAR_IMAGE); tags carry the model:
+  #   <model-id>-unverified  →  <model-id>-verified-<score>-<version>
+  UNVERIFIED_TAG="${MODEL_ID}-unverified"
+  return 0
+}
 
 export NS_MODEL_INGRESS="${NS_MODEL_INGRESS:-model-ingress}"
 export NS_MODEL_EVAL="${NS_MODEL_EVAL:-model-eval}"
@@ -57,17 +99,26 @@ export NS_GITOPS="${NS_GITOPS:-openshift-gitops}"
 FROM_STEP=1
 VALIDATE_ONLY=0
 ASSUME_YES=0
+COMPARE_MODE=0
+COMPARE_REPORT_ONLY=0
+COMPARE_KEYS=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --from-step) FROM_STEP="$2"; shift 2 ;;
     --from-step=*) FROM_STEP="${1#*=}"; shift ;;
     --validate-only) VALIDATE_ONLY=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --compare) COMPARE_MODE=1; COMPARE_KEYS="qwen granite llama"; shift ;;
+    --compare=*) COMPARE_MODE=1; COMPARE_KEYS=$(echo "${1#*=}" | tr ',' ' '); shift ;;
+    --compare-report) COMPARE_REPORT_ONLY=1; shift ;;
+    -h|--help) sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $1 (see --help)"; exit 2 ;;
   esac
 done
 case "$FROM_STEP" in ''|*[!0-9]*) echo "--from-step needs a number"; exit 2 ;; esac
+for k in $COMPARE_KEYS; do
+  case "$k" in qwen|granite|llama) ;; *) echo "Unknown model '$k' (use qwen, granite, llama)"; exit 2 ;; esac
+done
 
 cd "$(dirname "$0")" || exit 1
 REPO_ROOT="$(pwd)"
@@ -145,7 +196,7 @@ record() { STEP_NUMS+=("$1"); STEP_TITLES+=("$2"); STEP_RESULTS+=("$3"); STEP_NO
 run_step() {
   local num=$1 title=$2 what=$3 fn=$4 rc choice
   if [ "$num" -gt 2 ] && [ "$num" -lt "$FROM_STEP" ]; then record "$num" "$title" "SKIPPED" "before --from-step"; return 0; fi
-  hdr "Step ${num}/17: ${title}"
+  if [ "$num" -le 17 ]; then hdr "Step ${num}/17: ${title}"; else hdr "Step ${num}: ${title}"; fi
   [ -n "$what" ] && printf '%s\n' "  ${DIM}${what}${N}"
   if [ "$ASSUME_YES" -ne 1 ] && [ "$num" -gt 2 ]; then
     while true; do
@@ -423,7 +474,7 @@ write_env() {
   {
     echo "# Written by deploy.sh on $(date). Git-ignored: never commit this file."
     for k in HF_TOKEN QUAY_SERVER QUAY_USERNAME QUAY_PASSWORD QUAY_EMAIL QUAY_SECRET_NAME MODELCAR_IMAGE \
-             MINIO_ROOT_USER MINIO_ROOT_PASSWORD GIT_URL GIT_BRANCH GIT_USERNAME GIT_TOKEN APPS_DOMAIN CLUSTER_ISSUER; do
+             MINIO_ROOT_USER MINIO_ROOT_PASSWORD GIT_URL GIT_BRANCH GIT_USERNAME GIT_TOKEN APPS_DOMAIN CLUSTER_ISSUER MLFLOW_TRACKING_URI; do
       eval "v=\${$k:-}"
       v=$(printf '%s' "$v" | sed "s/'/'\\\\''/g")
       printf "%s='%s'\n" "$k" "$v"
@@ -574,16 +625,16 @@ collect_creds() {
   ask QUAY_USERNAME "Quay username or robot (org+robot)" "${QUAY_USERNAME:-}"
   ask_secret QUAY_PASSWORD "Quay password / robot token"
   ask QUAY_EMAIL "Quay e-mail (optional)" "${QUAY_EMAIL:-}"
-  local def_img=${MODELCAR_IMAGE:-${QUAY_SERVER}/${QUAY_USERNAME%%+*}/modelcar-redhatai-qwen3-8b-fp8-dynamic}
+  local def_img=${MODELCAR_IMAGE:-${QUAY_SERVER}/${QUAY_USERNAME%%+*}/ai-model-security-pipeline}
   while true; do
-    ask MODELCAR_IMAGE "ModelCar image repo, without tag" "$def_img"
+    ask MODELCAR_IMAGE "ModelCar repository, shared by all models (no tag)" "$def_img"
     case "$MODELCAR_IMAGE" in
       *@*) fail "no digest please"; continue ;;
       "${QUAY_SERVER}"/*) ;;
       *) fail "must start with ${QUAY_SERVER}/"; continue ;;
     esac
     repo=${MODELCAR_IMAGE#*/}
-    case "$repo" in *:*) fail "remove the tag (:…) — the pipeline adds :unverified / :verified-*"; continue ;; esac
+    case "$repo" in *:*) fail "remove the tag (:…) — the pipeline adds <model-id>-unverified / <model-id>-verified-*"; continue ;; esac
     break
   done
   acc=$(quay_access "$repo")
@@ -626,7 +677,7 @@ show_settings() {
     "Quay password" "$(mask "$QUAY_PASSWORD")" \
     "Quay e-mail" "${QUAY_EMAIL:-(empty)}" \
     "Pull secret name" "${QUAY_SECRET_NAME}" \
-    "ModelCar image" "${MODELCAR_IMAGE}  (tags :unverified, :verified-score-build*)" \
+    "ModelCar repo" "${MODELCAR_IMAGE}  (tags <model-id>-unverified, <model-id>-verified-<score>-<version>)" \
     "Model id" "${MODEL_ID}" \
     "MinIO user" "${MINIO_ROOT_USER}" \
     "MinIO password" "$(mask "$MINIO_ROOT_PASSWORD")" \
@@ -666,6 +717,7 @@ step_settings() {
         export GIT_URL GIT_BRANCH APPS_DOMAIN CLUSTER_ISSUER QUAY_SERVER QUAY_USERNAME QUAY_PASSWORD QUAY_EMAIL \
                QUAY_SECRET_NAME MODELCAR_IMAGE MINIO_ROOT_USER MINIO_ROOT_PASSWORD HF_TOKEN
         note "saved settings: ${GIT_URL}@${GIT_BRANCH}, image ${MODELCAR_IMAGE}"
+        BASE_MODELCAR_IMAGE="$MODELCAR_IMAGE"
         return 0
       fi
     fi
@@ -683,6 +735,7 @@ step_settings() {
   export GIT_URL GIT_BRANCH APPS_DOMAIN CLUSTER_ISSUER QUAY_SERVER QUAY_USERNAME QUAY_PASSWORD QUAY_EMAIL \
          QUAY_SECRET_NAME MODELCAR_IMAGE MINIO_ROOT_USER MINIO_ROOT_PASSWORD HF_TOKEN
   note "repo ${GIT_URL}@${GIT_BRANCH}, image ${MODELCAR_IMAGE}"
+  BASE_MODELCAR_IMAGE="$MODELCAR_IMAGE"
   return 0
 }
 
@@ -965,6 +1018,15 @@ step_secrets() {
   oc create secret generic hf-token -n "$NS_MODEL_INGRESS" --from-literal=HF_TOKEN="$HF_TOKEN" \
     --dry-run=client -o yaml | oc apply -f - >/dev/null || return 1
   ok "hf-token"
+  # MLflow server (instances/mlflow) stores artifacts in MinIO bucket "mlflow"
+  if exists namespace redhat-ods-applications; then
+    oc create secret generic mlflow-s3-credentials -n redhat-ods-applications \
+      --from-literal=AWS_ACCESS_KEY_ID="$MINIO_ROOT_USER" --from-literal=AWS_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
+      --from-literal=AWS_DEFAULT_REGION=us-east-1 --from-literal=MLFLOW_S3_ENDPOINT_URL=http://minio.minio-system.svc:9000 \
+      --dry-run=client -o yaml | oc apply -f - >/dev/null && ok "mlflow-s3-credentials (MLflow artifacts in MinIO)"
+  else
+    warn "redhat-ods-applications doesn't exist yet: step 12 creates mlflow-s3-credentials once RHOAI is up"
+  fi
   if [ "${GIT_PRIVATE:-0}" = 1 ]; then
     oc create secret generic git-auth -n "$NS_MODEL_EVAL" --from-literal=token="$GIT_TOKEN" \
       --dry-run=client -o yaml | oc apply -f - >/dev/null && ok "git-auth (private repo clone in Tasks)"
@@ -1040,12 +1102,61 @@ EOF
 dsc_ready()  { [ "$(jp datasciencecluster default-dsc -o jsonpath='{.status.phase}')" = Ready ]; }
 mr_ready()   { [ "$(jp modelregistries.modelregistry.opendatahub.io model-registry -n rhoai-model-registries -o jsonpath='{.status.conditions[?(@.type=="Available")].status}')" = True ]; }
 nemo_crd()   { exists crd nemoguardrails.trustyai.opendatahub.io; }
+# ---- MLflow (instances/mlflow) ------------------------------------------------
+RHOAI_NS="redhat-ods-applications"
+ensure_mlflow_secret() {
+  exists secret mlflow-s3-credentials -n "$RHOAI_NS" && return 0
+  oc create secret generic mlflow-s3-credentials -n "$RHOAI_NS" \
+    --from-literal=AWS_ACCESS_KEY_ID="$MINIO_ROOT_USER" --from-literal=AWS_SECRET_ACCESS_KEY="$MINIO_ROOT_PASSWORD" \
+    --from-literal=AWS_DEFAULT_REGION=us-east-1 --from-literal=MLFLOW_S3_ENDPOINT_URL=http://minio.minio-system.svc:9000 \
+    --dry-run=client -o yaml | oc apply -f - >/dev/null && ok "mlflow-s3-credentials created"
+}
+mlflow_ready() {   # the tracking server Deployment (not the operator, not the dashboard UI) is available
+  oc get deploy -n "$RHOAI_NS" -o json 2>/dev/null | jq -e '[.items[]
+    | select(.metadata.name | test("^mlflow") and (test("operator|ui") | not))
+    | select((.status.availableReplicas // 0) >= 1)] | length > 0' >/dev/null
+}
+mlflow_discover_uri() {   # prints https://<svc>.<ns>.svc:<port> for the tracking server Service
+  oc get svc -n "$RHOAI_NS" -o json 2>/dev/null | jq -r --arg ns "$RHOAI_NS" '[.items[]
+    | select(.metadata.name | test("^mlflow") and (test("operator|ui|metrics") | not))
+    | {n: .metadata.name, p: (.spec.ports[0].port), pn: (.spec.ports[0].name // "")}] | first // empty
+    | (if (.p == 8443 or .p == 443 or (.pn | test("https"))) then "https" else "http" end)
+      + "://\(.n).\($ns).svc:\(.p)"'
+}
+mlflow_check_from_eval() {   # HTTP code of <uri>/health from a pod in model-eval (same NetworkPolicy as the pipeline)
+  local img="image-registry.openshift-image-registry.svc:5000/${NS_BUILD_IMAGE}/ai-security-publish:latest"
+  oc delete pod mlflow-check -n "$NS_MODEL_EVAL" --ignore-not-found >/dev/null 2>&1
+  oc run mlflow-check -n "$NS_MODEL_EVAL" --rm -i --restart=Never --quiet --image="$img" --command -- \
+    curl -sk -o /dev/null -w '%{http_code}' --max-time 20 "$1/health" 2>/dev/null | tr -dc '0-9' | tail -c 3
+}
+step_mlflow() {   # called from step 12: server up, URI known, reachable from model-eval
+  local code
+  exists crd mlflows.mlflow.opendatahub.io || { warn "MLflow CRD missing: is mlflowoperator Managed in the DSC?"; return 1; }
+  ensure_mlflow_secret
+  wait_until "MLflow tracking server running (${RHOAI_NS})" 900 15 mlflow_ready || return 1
+  [ -z "${MLFLOW_TRACKING_URI:-}" ] && MLFLOW_TRACKING_URI=$(mlflow_discover_uri)
+  [ -n "$MLFLOW_TRACKING_URI" ] || { warn "could not find the MLflow tracking Service in ${RHOAI_NS}"; return 1; }
+  code=$(mlflow_check_from_eval "$MLFLOW_TRACKING_URI")
+  if [ "$code" = 200 ]; then
+    ok "MLflow reachable from ${NS_MODEL_EVAL}: ${MLFLOW_TRACKING_URI}"
+  else
+    warn "MLflow at ${MLFLOW_TRACKING_URI} answered '${code:-nothing}' from ${NS_MODEL_EVAL} (NetworkPolicy? Deployment_Steps.md section 7)"
+    return 1
+  fi
+  export MLFLOW_TRACKING_URI
+  sed -i.bak "/^MLFLOW_TRACKING_URI=/d" .env 2>/dev/null && rm -f .env.bak
+  printf "MLFLOW_TRACKING_URI='%s'\n" "$MLFLOW_TRACKING_URI" >> .env 2>/dev/null
+  info "saved MLFLOW_TRACKING_URI to .env; every PipelineRun now logs to MLflow (workspace ${NS_MODEL_EVAL})"
+  return 0
+}
+
 step_platform() {
   local rc=0
   wait_apps 120 || rc=1
   wait_until "DataScienceCluster default-dsc Ready" 1800 20 dsc_ready || rc=1
   wait_until "Model Registry available" 1200 20 mr_ready || rc=1
   wait_until "NemoGuardrails CRD (TrustyAI)" 1200 20 nemo_crd || rc=1
+  step_mlflow || { warn "MLflow not ready: pipeline runs will skip MLflow logging"; rc=1; }
   check_platform_basics
   [ $rc -eq 0 ] || note "some components not ready"
   return $rc
@@ -1082,23 +1193,36 @@ step_testzone() {
 # =============================================================================
 job_state() { jp job model-fetch -n "$NS_MODEL_INGRESS" -o jsonpath='{.status.succeeded}/{.status.failed}'; }
 job_finished() { case "$(job_state)" in 1/*|*/[1-9]*) return 0 ;; esac; return 1; }
+render_fetch_job() {   # model-fetch-job.yaml with this model's repo, id, shared image repo (+ extra patterns)
+  HFR="$HF_REPO" MID="$MODEL_ID" IMG="$MODELCAR_IMAGE" XP="$HF_EXTRA_PATTERNS" \
+  QHF="$QWEN_HF_REPO" QMID="$QWEN_MODEL_ID" perl -pe '
+    s#^(\s*value:\s*)\Q$ENV{QHF}\E\s*$#${1}$ENV{HFR}\n#;
+    s#^(\s*value:\s*)\Q$ENV{QMID}\E\s*$#${1}$ENV{MID}\n#;
+    if ($img && /^(\s*)value:\s*\S+\s*$/) {
+      my $ind = $1;
+      $_ = "${ind}value: $ENV{IMG}\n";
+      if ($ENV{XP} ne "") { (my $n = $ind) =~ s/  $//; $_ .= "${n}- name: HF_EXTRA_PATTERNS\n${ind}value: \"$ENV{XP}\"\n"; }
+    }
+    $img = /^\s*- name: MODELCAR_IMAGE\s*$/ ? 1 : 0;
+  ' instances/model-ingress-fetch/model-fetch-job.yaml
+}
 step_modelcar() {
-  if quay_tag_exists unverified; then
-    ok "${MODELCAR_IMAGE}:unverified already exists on ${QUAY_SERVER}"
-    confirm "Rebuild it anyway (downloads ~9 GB)?" n || { note "existing :unverified image reused"; return 0; }
+  if quay_tag_exists "$UNVERIFIED_TAG"; then
+    ok "${MODELCAR_IMAGE}:${UNVERIFIED_TAG} already exists on ${QUAY_SERVER}"
+    confirm "Rebuild it anyway (downloads ~9 GB)?" n || { note "existing ${UNVERIFIED_TAG} image reused"; return 0; }
   fi
-  info "The Job downloads RedHatAI/Qwen3-8B-FP8-dynamic (~9 GB), builds the ModelCar and pushes :unverified (15–60 min)."
+  info "The Job downloads ${HF_REPO} (~9 GB), builds the ModelCar and pushes ${MODELCAR_IMAGE}:${UNVERIFIED_TAG} (15–60 min)."
   oc delete job/model-fetch -n "$NS_MODEL_INGRESS" --ignore-not-found >/dev/null
-  IMG="$MODELCAR_IMAGE" PH="$MODELCAR_PLACEHOLDER" perl -pe 's#\Q$ENV{PH}\E#$ENV{IMG}#g' \
-    instances/model-ingress-fetch/model-fetch-job.yaml | oc apply -n "$NS_MODEL_INGRESS" -f - >/dev/null || return 1
+  render_fetch_job | oc apply -n "$NS_MODEL_INGRESS" -f - >/dev/null || return 1
   ok "job model-fetch started (follow: oc logs -f job/model-fetch -n ${NS_MODEL_INGRESS})"
   wait_until "model-fetch job finished" 7200 30 job_finished || return 1
   if [ "$(jp job model-fetch -n "$NS_MODEL_INGRESS" -o jsonpath='{.status.succeeded}')" != 1 ]; then
     oc logs job/model-fetch -n "$NS_MODEL_INGRESS" --tail=15 2>/dev/null | sed 's/^/    /'
-    info "unauthorized/denied → Quay credentials need Write (Deployment_Steps.md 3.3); SCC error → step 9"
+    info "unauthorized/denied → Quay credentials need Write (Deployment_Steps.md 3.3); SCC error → step 9;"
+    info "401/403 from huggingface.co → HF_TOKEN must have accepted the model's license"
     note "model-fetch job failed"; return 1
   fi
-  if quay_tag_exists unverified; then ok "${MODELCAR_IMAGE}:unverified is on ${QUAY_SERVER}"; else warn "job succeeded but :unverified wasn't found via the registry API"; fi
+  if quay_tag_exists "$UNVERIFIED_TAG"; then ok "${MODELCAR_IMAGE}:${UNVERIFIED_TAG} is on ${QUAY_SERVER}"; else warn "job succeeded but ${UNVERIFIED_TAG} wasn't found via the registry API"; fi
   return 0
 }
 
@@ -1164,10 +1288,16 @@ step_pipeline() {
     warn "leftovers in ${NS_MODEL_SANDBOX}: $(echo "$left" | tr '\n' ' ')"
     confirm "Delete them (they hold a GPU)?" y && oc delete llminferenceservice,nemoguardrails --all -n "$NS_MODEL_SANDBOX" >/dev/null
   fi
-  if exists llminferenceservice "$MODEL_TEST_LLMIS" -n "$NS_MODEL_TEST"; then
-    warn "a verified model is already serving in ${NS_MODEL_TEST}; publishing a new one needs a free GPU while it rolls over"
-    confirm "Delete the current ${NS_MODEL_TEST} model first (recommended with 2 GPU nodes)?" y && \
+  local served; served=$(oc get llminferenceservice -n "$NS_MODEL_TEST" -o name 2>/dev/null | tr '\n' ' ')
+  if [ -n "$served" ]; then
+    if [ "$COMPARE_MODE" = 1 ]; then
+      info "replacing the model served in ${NS_MODEL_TEST} (${served% }) so this run's model can use the GPU"
       oc delete llminferenceservice --all -n "$NS_MODEL_TEST" >/dev/null
+    else
+      warn "a verified model is already serving in ${NS_MODEL_TEST}; publishing a new one needs a free GPU while it rolls over"
+      confirm "Delete the current ${NS_MODEL_TEST} model first (recommended with 2 GPU nodes)?" y && \
+        oc delete llminferenceservice --all -n "$NS_MODEL_TEST" >/dev/null
+    fi
   fi
   info "Starting PipelineRun: model ${MODEL_ID}, image ${MODELCAR_IMAGE}, repo ${GIT_URL}@${GIT_BRANCH}"
   local prfile="${TMPDIR:-/tmp}/deploy-pipelinerun-$$.yaml"
@@ -1189,6 +1319,7 @@ spec:
     - {name: model-sandbox-path,      value: ${SANDBOX_LLMIS_FILE}}
     - {name: serving-yaml,            value: ${SERVING_YAML}}
     - {name: nemo-guardrails-enabled, value: 'true'}
+    - {name: mlflow-tracking-uri,     value: "${MLFLOW_TRACKING_URI:-}"}
   workspaces:
     - {name: shared-data, persistentVolumeClaim: {claimName: eval-workspace}}
     - {name: results, emptyDir: {}}
@@ -1197,6 +1328,7 @@ EOF
   rm -f "$prfile"
   [ -z "$PR" ] && { note "PipelineRun not created"; return 1; }
   echo "$PR" >.last-pipelinerun
+  [ "$COMPARE_MODE" = 1 ] && record_compare_run "$PR"
   ok "PipelineRun ${PR} (version ${PR: -5}); watch it in the console under Pipelines"
   start=$(date +%s)
   while ! pr_done; do
@@ -1293,6 +1425,11 @@ step_validate() {
   s=$(jp gateway openshift-ai-inference -n openshift-ingress -o jsonpath='{.status.conditions[?(@.type=="Programmed")].status}')
   [ "$s" = True ] && vrec "Inference gateway" PASS "Programmed" || vrec "Inference gateway" FAIL "Programmed=${s:-missing}"
 
+  # MLflow
+  s=$(jp datasciencecluster default-dsc -o jsonpath='{.spec.components.mlflowoperator.managementState}')
+  if mlflow_ready; then vrec "MLflow tracking server" PASS "running in ${RHOAI_NS}${MLFLOW_TRACKING_URI:+ (${MLFLOW_TRACKING_URI})}"
+  else vrec "MLflow tracking server" FAIL "mlflowoperator=${s:-?}; no running server (instances/mlflow)"; fi
+
   # NeMo setup
   s=$(jp datasciencecluster default-dsc -o jsonpath='{.spec.components.trustyai.managementState}')
   nemo_crd && [ "$s" = Managed ] && vrec "TrustyAI / NemoGuardrails CRD" PASS "Managed, CRD present" || vrec "TrustyAI / NemoGuardrails CRD" FAIL "trustyai=${s:-?}"
@@ -1313,7 +1450,7 @@ step_validate() {
 
   # ModelCar
   if [ -n "${QUAY_USERNAME:-}" ] && [ -n "${MODELCAR_IMAGE:-}" ]; then
-    quay_tag_exists unverified && vrec "ModelCar :unverified" PASS "${MODELCAR_IMAGE}:unverified" || vrec "ModelCar :unverified" FAIL "not found on registry"
+    quay_tag_exists "$UNVERIFIED_TAG" && vrec "ModelCar (unverified)" PASS "${MODELCAR_IMAGE}:${UNVERIFIED_TAG}" || vrec "ModelCar (unverified)" FAIL "${UNVERIFIED_TAG} not found on registry"
   fi
 
   # last pipeline run
@@ -1341,6 +1478,12 @@ step_validate() {
     fi
     s=$(oc get llminferenceservice,nemoguardrails -n "$NS_MODEL_SANDBOX" -o name 2>/dev/null | wc -l | tr -d ' ')
     [ "$s" = 0 ] && vrec "Sandbox cleaned up" PASS "no model/NeMo left in ${NS_MODEL_SANDBOX}" || vrec "Sandbox cleaned up" WARN "${s} resources left in ${NS_MODEL_SANDBOX}"
+    reply=$(tasklog archive-results | grep '\[log-mlflow\]' | tail -1)
+    case "$reply" in
+      *"logged run"*|*"updated run"*) vrec "MLflow run for ${PR}" PASS "$(echo "$reply" | sed 's/.*\(logged\|updated\) run \([0-9a-f]*\).*/\2/' | cut -c1-12) in workspace ${NS_MODEL_EVAL}" ;;
+      *WARNING*) vrec "MLflow run for ${PR}" FAIL "$(echo "$reply" | cut -c1-90)" ;;
+      *) vrec "MLflow run for ${PR}" WARN "not logged (mlflow-tracking-uri empty for this run, or logs pruned)" ;;
+    esac
   else
     vrec "Pipeline run" WARN "no PipelineRun found (step 16 not run)"
   fi
@@ -1391,6 +1534,125 @@ step_validate() {
 }
 
 # =============================================================================
+# --compare: run several models through the pipeline and compare them
+# =============================================================================
+record_compare_run() {   # record_compare_run <pipelinerun> — one line per model in COMPARE_RUNS_FILE
+  local tmp="${COMPARE_RUNS_FILE}.tmp"
+  { [ -f "$COMPARE_RUNS_FILE" ] && grep -v "^${MODEL_KEY}"$'\t' "$COMPARE_RUNS_FILE"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$MODEL_KEY" "$MODEL_LABEL" "$HF_REPO" "$MODEL_ID" "$1"; } >"$tmp" || true
+  mv "$tmp" "$COMPARE_RUNS_FILE"
+}
+
+# newest finished PipelineRun for $MODEL_ID: prints "<name> <True|False> <completionTime>"
+last_run_for_model() {
+  oc get pipelineruns.tekton.dev -n "$NS_MODEL_EVAL" -o json 2>/dev/null | jq -r --arg m "$MODEL_ID" '
+    [.items[]
+      | select(any(.spec.params[]?; .name == "model-id" and .value == $m))
+      | select(.status.completionTime != null)
+      | {n: .metadata.name, s: (.status.conditions[0].status // "Unknown"), t: .status.completionTime}]
+    | sort_by(.t) | last // empty | "\(.n) \(.s) \(.t)"'
+}
+
+modelcar_cm_ready() {
+  oc get cm modelcar-build -n "$NS_MODEL_INGRESS" -o jsonpath='{.data.build-modelcar\.sh}' 2>/dev/null | grep -q HF_EXTRA_PATTERNS
+}
+
+step_compare_prepare() {
+  local k rc=0 slug f code acc need_cm=0
+  info "Models to compare (one at a time; each run replaces the model served in ${NS_MODEL_TEST}):"
+  for k in $COMPARE_KEYS; do
+    use_model "$k"
+    printf '      %-26s %-50s %s\n' "$MODEL_LABEL" "$HF_REPO" "${MODELCAR_IMAGE}:${UNVERIFIED_TAG}"
+    [ -n "$HF_EXTRA_PATTERNS" ] && need_cm=1
+  done
+  # 1. the per-model manifests must be on the branch the pipeline clones
+  slug=$(gh_slug)
+  if [ -n "$slug" ]; then
+    for k in $COMPARE_KEYS; do
+      use_model "$k"
+      for f in "$SANDBOX_LLMIS_FILE" "$SERVING_YAML"; do
+        code=$(gh_api_code "repos/${slug}/contents/${f}?ref=${GIT_BRANCH}" "${GIT_TOKEN:-}")
+        if [ "$code" = 200 ]; then ok "on ${GIT_BRANCH}: ${f}"
+        else fail "not on ${GIT_BRANCH} (HTTP ${code}): ${f} — push the repo first"; rc=1; fi
+      done
+    done
+  else
+    warn "not a GitHub repo: can't check that the model files are pushed"
+  fi
+  # 2. the ModelCar build must know HF_EXTRA_PATTERNS (Argo CD: ai-sec-model-ingress)
+  if [ "$need_cm" = 1 ]; then
+    if modelcar_cm_ready; then ok "ModelCar build supports extra download patterns (chat_template.jinja)"
+    else
+      warn "ConfigMap modelcar-build is older than this repo (Argo CD hasn't synced ai-sec-model-ingress)"
+      oc annotate applications.argoproj.io ai-sec-model-ingress -n "$NS_GITOPS" argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1
+      wait_until "Argo CD syncs the new ModelCar build files" 600 15 modelcar_cm_ready || rc=1
+    fi
+  fi
+  # 3. Quay push rights for the shared ModelCar repo
+  acc=$(quay_access "${MODELCAR_IMAGE#*/}")
+  case "$acc" in
+    push|token) ok "Quay: can push ${MODELCAR_IMAGE} (all models are tags in this repo)" ;;
+    *) fail "Quay: can't push ${MODELCAR_IMAGE} (${acc}). A robot account needs Write on that repository"; rc=1 ;;
+  esac
+  # 4. serving configs for all models in model-test (overlay 16)
+  oc apply -k ./overlays/16-test-serving/ -n "$NS_MODEL_TEST" >/dev/null || rc=1
+  for k in $COMPARE_KEYS; do
+    use_model "$k"
+    exists llminferenceserviceconfig "$MODEL_ID" -n "$NS_MODEL_TEST" && ok "serving config ${MODEL_ID} in ${NS_MODEL_TEST}" \
+      || { fail "LLMInferenceServiceConfig ${MODEL_ID} missing in ${NS_MODEL_TEST}"; rc=1; }
+  done
+  [ $rc -eq 0 ] || note "fix the items above, then retry"
+  return $rc
+}
+
+step_compare_model() {   # runs for the current use_model selection
+  local prev name status t
+  prev=$(last_run_for_model)
+  if [ -n "$prev" ]; then
+    read -r name status t <<<"$prev"
+    if [ "$status" = True ]; then
+      info "Found a successful run for ${MODEL_LABEL}: ${name} (finished ${t})."
+      if confirm "Reuse it instead of running ${MODEL_LABEL} again (~1 h)?" y; then
+        record_compare_run "$name"; note "reused ${name}"; return 0
+      fi
+    else
+      info "The last run for ${MODEL_LABEL} (${name}) did not succeed; running again."
+    fi
+  fi
+  step_modelcar || { note "ModelCar build failed"; return 1; }
+  step_pipeline
+}
+
+step_compare_report() {
+  local out
+  command -v python3 >/dev/null 2>&1 || { note "python3 is required for the report"; return 1; }
+  [ -s "$COMPARE_RUNS_FILE" ] || { note "no runs recorded yet (${COMPARE_RUNS_FILE}); run ./deploy.sh --compare"; return 1; }
+  info "Models in the report:"; cut -f2,5 "$COMPARE_RUNS_FILE" | sed 's/\t/  →  /; s/^/      /'
+  out=$(python3 tools/compare_models.py --runs "$COMPARE_RUNS_FILE" --port-forward \
+          --minio-namespace "$NS_MINIO" --eval-namespace "$NS_MODEL_EVAL" \
+          --cluster "${OC_SERVER:-}" --out-dir "$REPO_ROOT" 2>&1)
+  local rc=$?
+  printf '%s\n' "$out" | sed 's/^/  /'
+  [ $rc -eq 0 ] || { note "report failed"; return 1; }
+  COMPARE_HTML=$(printf '%s\n' "$out" | sed -n 's/.*\(model-comparison-[0-9-]*\.html\).*/\1/p' | tail -1)
+  note "report: ${COMPARE_HTML:-written}"
+  [ -n "${MLFLOW_TRACKING_URI:-}" ] && info "Also in MLflow: RHOAI dashboard → project ${NS_MODEL_EVAL} → Develop & train → Experiments (MLflow) → ai-model-security-pipeline (select runs → Compare)"
+  if [ -n "$COMPARE_HTML" ] && command -v open >/dev/null 2>&1 && confirm "Open the HTML report now?" y; then
+    open "$REPO_ROOT/$COMPARE_HTML"
+  fi
+  return 0
+}
+
+use_served_model() {   # select the catalog model currently served in model-test (default: Qwen)
+  local k
+  for k in qwen granite llama; do
+    use_model "$k"
+    exists llminferenceservice "$MODEL_TEST_LLMIS" -n "$NS_MODEL_TEST" && return 0
+  done
+  use_model qwen
+}
+
+# =============================================================================
 # main
 # =============================================================================
 hdr "AI Model Security Pipeline — interactive deploy"
@@ -1399,7 +1661,42 @@ info "Log: ${LOG}"
 if [ "$VALIDATE_ONLY" = 1 ]; then
   run_step 1 "Preflight checks" "" step_preflight
   load_env >/dev/null; APPS_DOMAIN=${APPS_DOMAIN:-$(jp ingresses.config/cluster -o jsonpath='{.spec.domain}')}
-  run_step 17 "Final validation" "Read-only checks plus test calls to the guarded model." step_validate
+  BASE_MODELCAR_IMAGE="$MODELCAR_IMAGE"
+  use_served_model
+  run_step 17 "Final validation" "Read-only checks plus test calls to the guarded model (${MODEL_LABEL})." step_validate
+  exit 0
+fi
+
+if [ "$COMPARE_REPORT_ONLY" = 1 ]; then
+  VALIDATE_ONLY=1      # no git needed
+  run_step 1 "Preflight checks" "" step_preflight
+  load_env >/dev/null
+  run_step 27 "Comparison report" "Reads each model's scan results from MinIO and writes model-comparison-*.md/.html." step_compare_report
+  exit 0
+fi
+
+if [ "$COMPARE_MODE" = 1 ]; then
+  FROM_STEP=4          # steps 3–16 of the install are not run; no git checkout needed
+  cat <<EOF
+
+  Model comparison: $(for k in $COMPARE_KEYS; do use_model "$k"; printf '%s; ' "$MODEL_LABEL"; done)
+  For each model: build its ModelCar (skipped if it exists), run the full pipeline (~1 h,
+  or reuse an earlier successful run), then a side-by-side report. Each run replaces the
+  model served in ${NS_MODEL_TEST}; the last model stays served. Re-run any time: finished
+  models are offered for reuse.
+EOF
+  run_step 1  "Preflight checks" "Checks tools, oc login, cluster-admin. Changes nothing." step_preflight
+  run_step 2  "Collect and confirm settings" "Git, domain, issuer, Quay, MinIO, HF; validated. Changes nothing on the cluster." step_settings
+  run_step 20 "Prepare model comparison" "Checks files on Git, ModelCar build, Quay access; applies serving configs for all models." step_compare_prepare
+  n=20
+  for k in $COMPARE_KEYS; do
+    n=$((n+1)); use_model "$k"
+    run_step "$n" "${MODEL_LABEL}" "ModelCar ${MODELCAR_IMAGE}:${UNVERIFIED_TAG}, then a full PipelineRun." step_compare_model
+  done
+  run_step 27 "Comparison report" "Reads each model's scan results from MinIO and writes model-comparison-*.md/.html." step_compare_report
+  use_served_model; PR=""; rm -f .last-pipelinerun 2>/dev/null
+  PR=$(cut -f1,5 "$COMPARE_RUNS_FILE" 2>/dev/null | awk -F'\t' -v k="$MODEL_KEY" '$1==k{print $2}')
+  run_step 17 "Final validation" "Checks every component and the guarded model now served (${MODEL_LABEL})." step_validate
   exit 0
 fi
 
@@ -1429,9 +1726,9 @@ run_step 8  "MinIO credentials" "Creates minio-root from your settings and waits
 run_step 9  "Zone secrets" "Creates minio-s3, the Quay pull secret, hf-token; links service accounts." step_secrets
 run_step 10 "Build pipeline images" "oc start-build for the 7 scanner images from this checkout." step_builds
 run_step 11 "Authorino certificate" "Creates the serving-cert Service so Authorino becomes Ready." step_authorino
-run_step 12 "Wait for platform and verify" "Waits for all Argo CD apps, RHOAI, Model Registry, NeMo CRD." step_platform
+run_step 12 "Wait for platform and verify" "Waits for all Argo CD apps, RHOAI, Model Registry, NeMo CRD, MLflow (and tests it from model-eval)." step_platform
 run_step 13 "Test-zone serving resources" "oc apply -k overlays/16-test-serving (model config + NetworkPolicies)." step_testzone
-run_step 14 "Build the ModelCar image" "Runs the model-fetch Job: downloads the model, pushes ${MODELCAR_IMAGE:-<image>}:unverified." step_modelcar
+run_step 14 "Build the ModelCar image" "Runs the model-fetch Job: downloads the model, pushes ${MODELCAR_IMAGE:-<repo>}:${UNVERIFIED_TAG}." step_modelcar
 run_step 15 "Unit tests" "Local unit tests and fixture TaskRuns on the cluster (no GPU)." step_unit
 run_step 16 "Full pipeline run" "Starts a PipelineRun end to end (sandbox NeMo, score, publish, model-test NeMo)." step_pipeline
 run_step 17 "Final validation" "Checks every component and calls the guarded model." step_validate

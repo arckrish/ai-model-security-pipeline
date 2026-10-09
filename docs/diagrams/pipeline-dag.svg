@@ -85,7 +85,7 @@
 <text x="1358" y="390" fill="#6A6E73" font-size="10" font-weight="400" text-anchor="start" font-family="system-ui, -apple-system, Segoe UI, sans-serif">NeMo in front of model-test</text>
 <rect x="1348" y="430" width="220" height="64" rx="6" fill="#FFF4D4" stroke="#F0AB00" stroke-width="1"/>
 <text x="1358" y="452" fill="#151515" font-size="12" font-weight="600" text-anchor="start" font-family="system-ui, -apple-system, Segoe UI, sans-serif">archive-results</text>
-<text x="1358" y="470" fill="#6A6E73" font-size="10" font-weight="400" text-anchor="start" font-family="system-ui, -apple-system, Segoe UI, sans-serif">finally (+ stop CRs)</text>
+<text x="1358" y="470" fill="#6A6E73" font-size="10" font-weight="400" text-anchor="start" font-family="system-ui, -apple-system, Segoe UI, sans-serif">finally: manifest + MLflow run</text>
 <line x1="188" y1="282" x2="208" y2="149" stroke="#6A6E73" stroke-width="1.5" marker-end="url(#arr)"/>
 <line x1="188" y1="282" x2="208" y2="219" stroke="#6A6E73" stroke-width="1.5" marker-end="url(#arr)"/>
 <line x1="188" y1="282" x2="208" y2="289" stroke="#6A6E73" stroke-width="1.5" marker-end="url(#arr)"/>
@@ -99,7 +99,7 @@
 <line x1="1458" y1="244" x2="1458" y2="270" stroke="#6A6E73" stroke-width="1.5" marker-end="url(#arr)"/>
 <line x1="1458" y1="334" x2="1458" y2="350" stroke="#6A6E73" stroke-width="1.5" marker-end="url(#arr)"/>
 <text x="32" y="530" fill="#6A6E73" font-size="12" font-weight="400" text-anchor="start" font-family="system-ui, -apple-system, Segoe UI, sans-serif">Each column: siblings runAfter the previous merge. Merge tasks always succeed (concat JSON to MinIO scan-result/).</text>
-<text x="32" y="552" fill="#6A6E73" font-size="12" font-weight="400" text-anchor="start" font-family="system-ui, -apple-system, Segoe UI, sans-serif">score-gate fails the PipelineRun only when routing=reject. archive-results is pipeline finally and always writes manifest.json.</text>
+<text x="32" y="552" fill="#6A6E73" font-size="12" font-weight="400" text-anchor="start" font-family="system-ui, -apple-system, Segoe UI, sans-serif">score-gate fails the PipelineRun only when routing=reject. archive-results (finally) always writes manifest.json and logs the run to MLflow.</text>
 <text x="32" y="574" fill="#6A6E73" font-size="12" font-weight="400" text-anchor="start" font-family="system-ui, -apple-system, Segoe UI, sans-serif">Workspaces: shared-data = eval-workspace PVC (weights). results = emptyDir per TaskRun, then mc cp to s3://models-eval/&lt;id&gt;/&lt;ver&gt;/scan-result/.</text>
 <rect x="32" y="600" width="16" height="16" rx="3" fill="#E7F1FA" stroke="#0066CC" stroke-width="1"/>
 <text x="54" y="613" fill="#151515" font-size="12" font-weight="400" text-anchor="start" font-family="system-ui, -apple-system, Segoe UI, sans-serif">Scored / merge</text>

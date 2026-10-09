@@ -301,6 +301,9 @@ spec:
       VERSION="$(model_version_from_run "${PR}")"
       FILE="$(workspaces.results.path)/adversarial-nemo-guardrails.json"
       s3_put_scan_result "${MODEL_ID}" "${VERSION}" "${FILE}"
+      # probe counts for MLflow / model comparison (written in live mode only)
+      SUMMARY="$(workspaces.results.path)/nemo-guardrails-summary.json"
+      if [[ -f "${SUMMARY}" ]]; then s3_put_scan_result "${MODEL_ID}" "${VERSION}" "${SUMMARY}"; fi
   - name: fail-if-prior-failed
     image: $(params.image)
     script: |

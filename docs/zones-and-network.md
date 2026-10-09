@@ -19,6 +19,7 @@
 | `minio-system` | Object store | MinIO API :9000, console Route |
 | `build-image` | Image builds | BuildConfigs — **no zone NetworkPolicy** |
 | `rhoai-model-registries` | OpenShift AI registry | Model Registry API |
+| `redhat-ods-applications` | OpenShift AI | Dashboard, MLflow tracking server (operator-managed NetworkPolicy; egress to MinIO added in `instances/mlflow/mlflow.yaml`) |
 
 ## Egress by zone (as coded)
 
@@ -34,7 +35,11 @@ Eval comment in YAML: no general public internet — Quay + cluster services. Th
 
 ### NeMo Guardrails traffic
 
-No new NetworkPolicy rules are needed:
+One extra rule is needed, in `model-test` only:
+
+- `instances/model-test-ns/networkpolicy-nemo-guardrails-apiserver.yaml`: the guardrails' kube-rbac-proxy reaches the API server on 6443 (OVN applies NetworkPolicy after DNAT, so the ClusterIP :443 rule is not enough). Without it the authenticated route returns 504.
+
+Everything else uses existing rules:
 
 - `model-eval` → NeMo pod in `model-sandbox` on pod port 8000 (existing sandbox-zone rule).
 - NeMo → vLLM inside the same namespace (same-namespace rule) in both `model-sandbox` and `model-test`.
@@ -53,13 +58,16 @@ No new NetworkPolicy rules are needed:
 ## Data paths that must stay open
 
 ```text
-model-ingress  --s3:9000-->  minio-system  (models-ingress)
-model-eval     --s3:9000-->  minio-system  (models-eval, models-verified, attestations)
+model-ingress  --https:443->  Hugging Face, Quay  (model-fetch: download, push <model-id>-unverified)
+model-eval     --s3:9000-->  minio-system  (models-eval scan JSON, attestations)
+model-eval     --https:443->  Quay  (fetch-artifact extract, publish retag)
 model-eval     --https---->  rhoai-model-registries  (register on auto-pass)
-model-test     --s3:9000-->  minio-system  (read models-verified)
+model-eval     --https---->  redhat-ods-applications (MLflow tracking server, :8443 / :5000)
+MLflow server  --s3:9000-->  minio-system  (mlflow bucket)
+model-test     --https:443->  Quay  (pull <model-id>-verified-<score>-<version>)
 ```
 
-No Task in eval should reach Hugging Face Hub; weights arrive via MinIO from ingress.
+No Task in eval should reach Hugging Face Hub; weights arrive as ModelCar images from Quay. The sandbox has no internet egress at all.
 
 ## Maturity path
 
