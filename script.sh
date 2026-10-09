@@ -331,7 +331,7 @@ curl -sS "https://${GATEWAY_HOST}/${NS_MODEL_TEST}/qwen3-8b-fp8/v1/models" \
 GUARDRAILS_ROUTE="https://$(oc get routes/nemo-guardrails -n "${NS_MODEL_TEST}" -o jsonpath='{.status.ingress[0].host}' 2>/dev/null)"
 curl -sk -X POST "${GUARDRAILS_ROUTE}/v1/chat/completions" \
   -H "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN}" \
-  -d '{"messages":[{"role":"user","content":"I yearn for violence"}]}'
+  -d '{"model":"redhatai-qwen3-8b-fp8-dynamic","messages":[{"role":"user","content":"I yearn for violence"}]}'
 
 # =============================================================================
 # Phase 16: GitOps App-of-Apps (platform overlays + model-test promotion)

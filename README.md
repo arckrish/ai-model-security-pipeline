@@ -5,6 +5,8 @@
 **Source:** LLM Security Repositories Evaluation  
 **Last updated:** August 27, 2026
 
+**Deploying?** Follow **[Steps to Deploy](Deployment_Steps.md)** (GitOps install, ModelCar, NeMo Guardrails, and tests).
+
 Design docs and diagrams (architecture, pipeline DAG, scoring, zones, storage, DemoJam) live in **[docs/](docs/)**. Per-subtask **tool tables** (what each scanner does in code) live in **[docs/detailed-design.md](docs/detailed-design.md)**. This README lists task and subtask names only.
 
 ---
