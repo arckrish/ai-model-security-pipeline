@@ -24,7 +24,7 @@ Turn both off with the PipelineRun param `nemo-guardrails-enabled=false`. When i
 | `instances/tekton-tasks/nemo-guardrails.yaml` | Tasks `nemo-guardrails-deploy` (ConfigMap + `NemoGuardrails` CR, wait Ready) and `nemo-guardrails-delete` | 6–9 |
 | `instances/tekton-tasks/adversarial-test.yaml` | Task `adversarial-test-nemo-guardrails` | verification |
 | `builds/adversarial-test/scripts/run-nemo-guardrails.sh` | Probe + scoring logic | verification |
-| `instances/model-test/serving-rbac.yaml` | `test-user` may call the authenticated guardrails route (not in a kustomization: `oc apply -n model-test -f` it) | — |
+| `instances/model-test-ns/serving-rbac.yaml` | `test-user` may call the authenticated guardrails route (not in a kustomization: `oc apply -n model-test -f` it) | — |
 
 **Deviation from the guide:** the guide mints the API token with `oc create token --duration=8760h`, which expires silently after a year. This repo uses a `kubernetes.io/service-account-token` Secret instead, so the token controller keeps it populated. The account still only has `view`.
 
