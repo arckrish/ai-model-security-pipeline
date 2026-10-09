@@ -8,13 +8,13 @@ metadata:
 spec:
   description: >
     Clone git-url, replace placeholder image URI in the sandbox serving YAML with
-    oci://…:unverified, apply in model-sandbox, wait until Ready, export endpoint URL.
+    oci://…:<model-id>-unverified, apply in model-sandbox, wait until Ready, export endpoint URL.
   params:
   - name: model-id
     type: string
   - name: modelcar-image
     type: string
-    description: ModelCar repository without tag
+    description: Shared ModelCar repository (tag is model-id-unverified)
   - name: pipeline-run-name
     type: string
     default: ''
@@ -64,7 +64,7 @@ spec:
       export GIT_PATH="$(params.model-sandbox-path)"
       export GIT_REVISION="$(params.git-revision)"
       export OUT_DIR="${OUT}"
-      export MODEL_URI="oci://$(params.modelcar-image):unverified"
+      export MODEL_URI="oci://$(params.modelcar-image):$(params.model-id)-unverified"
       export NAMESPACE="$(params.namespace)"
       /scripts/clone-and-patch-llmis.sh
       NAME="$(cat "${OUT}/.llmis-name")"

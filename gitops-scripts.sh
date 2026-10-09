@@ -223,8 +223,9 @@ oc get authorino authorino -n kuadrant-system \
 # =============================================================================
 # Phase 5: Build ModelCar (:unverified) + live PipelineRun
 # Prerequisites: Argo apps 07–12 Synced (Tasks, Pipeline, Triggers, Chains, RHOAI).
-# Edit MODELCAR_IMAGE in model-fetch-job.yaml and pipelinerun-example.yaml (same value).
-# Edit git-url / serving-yaml in pipelinerun-example.yaml as needed.
+# MODELCAR_IMAGE is shared repo quay.io/sudash/ai-model-security-pipeline (Job + PipelineRun).
+# Tags: <model-id>-unverified → <model-id>-verified-<score>-<version>.
+# Edit git-url / serving-yaml / model-id in pipelinerun-example.yaml as needed.
 # Rebuild publish image after ModelCar changes: oc start-build ai-security-publish --from-dir=builds/publish --follow -n build-image
 # =============================================================================
 # Wait until RHOAI / Model Registry are Ready (needed before publish-artifact):

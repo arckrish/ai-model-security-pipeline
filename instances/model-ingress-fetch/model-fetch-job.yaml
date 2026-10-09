@@ -9,7 +9,8 @@
 #   oc apply -f instances/model-ingress-fetch/model-fetch-job.yaml -n model-ingress
 #   oc wait --for=condition=complete job/model-fetch -n model-ingress --timeout=7200s
 #
-# Override HF_REPO / MODEL_ID / MODELCAR_IMAGE for other models (must match PipelineRun).
+# Override HF_REPO / MODEL_ID for other models (must match PipelineRun model-id).
+# Pushes: ${MODELCAR_IMAGE}:${MODEL_ID}-unverified
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -41,11 +42,9 @@ spec:
               value: RedHatAI/Qwen3-8B-FP8-dynamic
             - name: MODEL_ID
               value: redhatai-qwen3-8b-fp8-dynamic
-            # Repo without tag; script pushes :unverified
+            # Shared repo; tag is ${MODEL_ID}-unverified
             - name: MODELCAR_IMAGE
-              value: quay.io/sudash/modelcar-redhatai-qwen3-8b-fp8-dynamic
-            - name: MODELCAR_TAG
-              value: unverified
+              value: quay.io/sudash/ai-model-security-pipeline
             - name: CONTEXT_DIR
               value: /build
             - name: REGISTRY_AUTH_FILE

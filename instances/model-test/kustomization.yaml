@@ -1,5 +1,5 @@
 # Zone resources for model-test. Verified LLMInferenceService YAML is applied by
-# publish-artifact (placeholder image → oci://…:verified-score-build*) — not here.
+# publish-artifact (placeholder → oci://…:<model-id>-verified-<score>-<version>) — not here.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 

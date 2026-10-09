@@ -12,13 +12,13 @@
 | Name | Kind | Role |
 |------|------|------|
 | `model-id` | param | Model id (must match fetch Job `MODEL_ID`) |
-| `modelcar-image` | param | ModelCar repo without tag (Quay) |
+| `modelcar-image` | param | Shared Quay repo (tags = `<model-id>-unverified` / `-verified-<score>-<version>`) |
 | `model-path` | param | Default `/workspace/models` |
 | `model-registry-namespace` | param | Default `rhoai-model-registries` |
 | `git-url` | param | Git repo with serving YAML |
 | `model-sandbox-path` | param | File path to sandbox LLMIS YAML (placeholder image) |
 | `serving-yaml` | param | File path to verified LLMIS YAML (placeholder image only) |
-| `shared-data` | workspace | PVC `eval-workspace` — **weights only** (extracted from `:unverified`) |
+| `shared-data` | workspace | PVC `eval-workspace` — **weights only** (extracted from `<model-id>-unverified`) |
 | `results` | workspace | Pod-local `emptyDir` for JSON before S3 upload; not shared across TaskRuns |
 
 Capability-eval and adversarial-test TaskRuns are CPU HTTP clients. GPU is requested by the **sandbox** `LLMInferenceService` in `model-sandbox`.
@@ -46,7 +46,7 @@ Merge Tasks always succeed. They concat per-subtask JSON into `static-scan.json`
 
 | Pipeline task | Tekton Task | Image | Output |
 |---------------|-------------|-------|--------|
-| `fetch-artifact` | `fetch-artifact` | `openshift/cli` | Extract `/models` from ModelCar `:unverified` onto eval PVC |
+| `fetch-artifact` | `fetch-artifact` | `openshift/cli` | Extract `/models` from ModelCar `<model-id>-unverified` onto eval PVC |
 
 ### Static security scanning (stage 1)
 
@@ -100,9 +100,9 @@ HTTP clients against `model-endpoint`. Garak / PyRIT / Promptfoo / LLM Guard are
 
 | Pipeline task | When | Effect |
 |---------------|------|--------|
-| `serve-llm-start` | After static-scan; all later tasks wait | Replace placeholder image with `oci://…:unverified`; apply sandbox YAML; result `endpoint-url` |
+| `serve-llm-start` | After static-scan; all later tasks wait | Replace placeholder with `oci://…:<model-id>-unverified`; apply sandbox YAML |
 | `score-gate` | After adversarial merge | Writes `score.json`; Task fails only on `routing=reject` |
-| `publish-artifact` | `when: routing in auto-pass, review` | Retag `:verified-score-buildVERSION`; register MR; apply `serving-yaml` (URI only) |
+| `publish-artifact` | `when: routing in auto-pass, review` | Retag `<model-id>-verified-<score>-<version>`; register MR; apply `serving-yaml` |
 | `serve-llm-stop` | `finally` | Deletes the sandbox `LLMInferenceService` (namespace stays) |
 | `archive-results` | `finally` (always) | `manifest.json` in the same scan-result prefix |
 

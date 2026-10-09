@@ -7,7 +7,7 @@ metadata:
     ai.security.pipeline/stage: publish-artifact
 spec:
   description: >
-    Retag ModelCar :unverified → :verified-score-buildVERSION, register in
+    Retag ModelCar model-id-unverified → model-id-verified-SCORE-VERSION, register in
     RHOAI Model Registry, and apply the caller-supplied serving YAML after
     replacing only the placeholder image URI.
   params:
@@ -18,7 +18,7 @@ spec:
       type: string
     - name: modelcar-image
       type: string
-      description: ModelCar repository without tag
+      description: Shared ModelCar repository (Quay)
     - name: model-registry-namespace
       type: string
       default: rhoai-model-registries
@@ -102,9 +102,10 @@ spec:
           exit 1
         fi
 
-        SRC_IMG="${MODELCAR_IMAGE}:unverified"
-        DST_TAG="verified-score-build${VERSION}"
-        DST_IMG="${MODELCAR_IMAGE}:${DST_TAG}"
+        SCORE_RAW="$(jq -r '.score // .S_total // 0' "${SCORE_FILE}")"
+        SCORE_TAG="$(python3 -c "print(int(round(float('${SCORE_RAW}'))))")"
+        SRC_IMG="${MODELCAR_IMAGE}:${MODEL_ID}-unverified"
+        DST_IMG="${MODELCAR_IMAGE}:${MODEL_ID}-verified-${SCORE_TAG}-${VERSION}"
         AUTHFILE=/tmp/auth.json
         if [[ -f /run/secrets/quay/.dockerconfigjson ]]; then
           cp /run/secrets/quay/.dockerconfigjson "${AUTHFILE}"
@@ -113,7 +114,7 @@ spec:
         echo "Retagging ${SRC_IMG} -> ${DST_IMG}"
         skopeo copy --quiet "docker://${SRC_IMG}" "docker://${DST_IMG}"
         PUBLISHED_URI="oci://${DST_IMG}"
-        echo "Published ModelCar ${PUBLISHED_URI} (routing=${ROUTING})"
+        echo "Published ModelCar ${PUBLISHED_URI} (routing=${ROUTING} score=${SCORE_TAG})"
 
         export MR_URL PUBLISHED_URI SCAN_URI VERSION ROUTING MODEL_ID
         # Back-compat env name for register_model.py
@@ -130,6 +131,7 @@ spec:
           "model_registry_namespace": "${MR_NS}",
           "model_version": "${VERSION}",
           "modelcar_image": "${DST_IMG}",
+          "score": ${SCORE_TAG},
         }
         with open("${DEST}/publish.json", "w") as fh:
             json.dump(payload, fh, indent=2)

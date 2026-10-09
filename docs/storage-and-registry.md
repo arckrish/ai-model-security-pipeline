@@ -12,10 +12,10 @@
 | Asset | Store | Namespace | Notes |
 |-------|-------|-----------|-------|
 | Scanner images | Internal registry / Quay | `build-image` | Not model weights |
-| Untrusted weights | Quay ModelCar `:unverified` | OCI | Built by `model-fetch` Job |
-| Eval workspace | PVC `eval-workspace` | `model-eval` | `/models` extracted from `:unverified` for static scans |
+| Untrusted weights | Quay `…/ai-model-security-pipeline:<model-id>-unverified` | OCI | Built by `model-fetch` Job |
+| Eval workspace | PVC `eval-workspace` | `model-eval` | `/models` extracted from unverified tag |
 | Scan JSON | MinIO `models-eval/<model-id>/<version>/scan-result/` | S3 | Per-subtask + merges + `score.json` |
-| Verified weights | Quay ModelCar `:verified-score-build<version>` | OCI | Publish retag on auto-pass or review |
+| Verified weights | Quay `…:<model-id>-verified-<score>-<version>` | OCI | Publish retag on auto-pass or review |
 | Attestations | MinIO `attestations/` | S3 | Tekton Chains target |
 | Serving pointer | RHOAI Model Registry | `rhoai-model-registries` | `storage_uri` = `oci://…` |
 
@@ -23,11 +23,11 @@ Buckets `models-ingress` / `models-verified` may still exist from older installs
 
 ## Version key
 
-PipelineRun `model-security-9x57m` → version `9x57m` → tag `verified-score-build9x57m`.
+PipelineRun `model-security-9x57m` → version `9x57m`. Score 87 → tag `…-verified-87-9x57m`.
 
 ```text
 s3://models-eval/<model-id>/9x57m/scan-result/*.json
-oci://quay.io/<org>/modelcar-<model-id>:verified-score-build9x57m
+oci://quay.io/sudash/ai-model-security-pipeline:<model-id>-verified-87-9x57m
 ```
 
 ## Object names in `scan-result/`
@@ -51,20 +51,20 @@ oci://quay.io/<org>/modelcar-<model-id>:verified-score-build9x57m
 ```text
 hf://RedHatAI/Qwen3-8B-FP8-dynamic
   -> model-fetch Job (instances/model-ingress-fetch; Containerfile via model-ingress ConfigMap)
-  -> quay.io/<org>/modelcar-redhatai-qwen3-8b-fp8-dynamic:unverified
+  -> quay.io/sudash/ai-model-security-pipeline:redhatai-qwen3-8b-fp8-dynamic-unverified
   -> PipelineRun (model-id + modelcar-image + serving-yaml)
   -> fetch-artifact: oc image extract /models onto eval PVC
-  -> serve-llm-start: oci://…:unverified (placeholder replace)
-  -> publish: retag :verified-score-buildVERSION + apply serving-yaml
+  -> serve-llm-start: oci://…:<model-id>-unverified (placeholder replace)
+  -> publish: retag …:<model-id>-verified-<score>-<version> + apply serving-yaml
 ```
 
-Knobs for any model: Job `HF_REPO` / `MODEL_ID` / `MODELCAR_IMAGE`, PipelineRun `model-id` / `modelcar-image` / `serving-yaml`.
+Knobs for any model: Job `HF_REPO` / `MODEL_ID`, PipelineRun `model-id` / `serving-yaml` (shared `modelcar-image` repo).
 
 ## Model Registry and serving
 
 On auto-pass or review, `publish-artifact`:
 
 1. Refuses unless `score.json` routing is `auto-pass` or `review`.
-2. Retags ModelCar `:unverified` → `:verified-score-build<version>`.
+2. Retags ModelCar `<model-id>-unverified` → `<model-id>-verified-<score>-<version>`.
 3. Registers Model Registry artifact with `oci://` URI.
 4. Clones `serving-yaml`, replaces `spec.model.uri` placeholder only, `oc apply` in `model-test`.

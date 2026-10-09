@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Build and push ModelCar image tagged :unverified (no MinIO weight upload).
+# Build and push ModelCar image.
+# Image: ${MODELCAR_IMAGE}:${MODEL_ID}-unverified
+#   e.g. quay.io/sudash/ai-model-security-pipeline:redhatai-qwen3-8b-fp8-dynamic-unverified
 set -euo pipefail
 
 HF_REPO="${HF_REPO:?HF_REPO required}"
 MODEL_ID="${MODEL_ID:?MODEL_ID required}"
 MODELCAR_IMAGE="${MODELCAR_IMAGE:?MODELCAR_IMAGE required (repo without tag)}"
 CONTEXT_DIR="${CONTEXT_DIR:-/build}"
-TAG="${MODELCAR_TAG:-unverified}"
+TAG="${MODELCAR_TAG:-${MODEL_ID}-unverified}"
 FULL_IMAGE="${MODELCAR_IMAGE}:${TAG}"
 
 export STORAGE_DRIVER="${STORAGE_DRIVER:-vfs}"
@@ -25,7 +27,6 @@ if [[ ! -s "${AUTHFILE}" ]]; then
   exit 1
 fi
 export REGISTRY_AUTH_FILE="${AUTHFILE}"
-# buildah also checks $HOME/.docker/config.json
 mkdir -p "${HOME:-/tmp}/.docker"
 cp "${AUTHFILE}" "${HOME:-/tmp}/.docker/config.json"
 
